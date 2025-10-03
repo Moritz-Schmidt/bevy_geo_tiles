@@ -10,7 +10,7 @@ bevy = { version = "0.17.1", features = [
     "http",
     "https",
 ] }
-proj = "0.31.0"
+miniproj = "0.10"
 tilemath = "0.3.0"
 
 [profile.dev]

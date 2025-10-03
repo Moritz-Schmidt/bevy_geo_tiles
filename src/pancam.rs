@@ -1,8 +1,8 @@
-use bevy::prelude::*;
+use bevy::{input::gestures::PinchGesture, prelude::*};
 
 pub(crate) fn pancam_plugin(app: &mut App) {
     app.add_systems(Startup, setup)
-        .add_systems(Update, zoom_smooth);
+        .add_systems(Update, (pinch_zoom, zoom_smooth).chain());
 }
 
 fn setup(mut commands: Commands, window: Single<Entity, With<Window>>) {
@@ -34,7 +34,16 @@ fn zoom(scroll: On<Pointer<Scroll>>, mut zoom: Single<&mut SmoothZoom, With<Came
     zoom.target_zoom *= 1.0 - (scroll.y / 10.);
 }
 
-#[derive(Event, Debug)]
+fn pinch_zoom(
+    mut pinch: MessageReader<PinchGesture>,
+    mut zoom: Single<&mut SmoothZoom, With<Camera>>,
+) {
+    for p in pinch.read() {
+        zoom.target_zoom *= 1.0 - (p.0 / 10.)
+    }
+}
+
+#[derive(Event, Debug, Deref)]
 pub(crate) struct NewScale(f32);
 
 fn zoom_smooth(
@@ -47,6 +56,6 @@ fn zoom_smooth(
         let mut scale_vec = Vec2::new(proj.scale, 0.0);
         scale_vec.smooth_nudge(&Vec2::new(zoom.target_zoom, 0.0), 30., time.delta_secs());
         proj.scale = scale_vec.x;
-        commands.trigger(NewScale(proj.scale.log2()));
+        commands.trigger(NewScale(proj.scale));
     }
 }
