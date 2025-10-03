@@ -31,7 +31,7 @@ impl Default for SmoothZoom {
 }
 
 fn zoom(scroll: On<Pointer<Scroll>>, mut zoom: Single<&mut SmoothZoom, With<Camera>>) {
-    zoom.target_zoom *= 1.0 - (scroll.y / 10.);
+    zoom.target_zoom *= 1.0 - (scroll.y / 50.);
 }
 
 fn pinch_zoom(
@@ -39,7 +39,7 @@ fn pinch_zoom(
     mut zoom: Single<&mut SmoothZoom, With<Camera>>,
 ) {
     for p in pinch.read() {
-        zoom.target_zoom *= 1.0 - (p.0 / 10.)
+        zoom.target_zoom *= 1.0 - (p.0)
     }
 }
 

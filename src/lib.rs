@@ -41,7 +41,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         max_x,
         max_y,
     };
-    let zoom = 9;
+    let zoom = 10;
     let tiles = bbox_covered_tiles(&bbox, zoom).collect::<Vec<_>>();
     info!("Tiles to load: {:?}", tiles);
     for tile in tiles {
@@ -84,6 +84,13 @@ fn handle_zoom_level(scale: On<NewScale>) {
     dbg!(scale.event().log2());
     // TODO: convert to zoom level somehow. Seems plausible 1 scale == 1 zoom level, but the tiles loaded with zoom leve 9
     // look good at scale ~17 on my screen.
+
+    // scale.log2() > 22 => zoom level 1 (min)
+    // scale.log2() =~ 21.5 => zoom level 4
+    // scale.log2() =~ 16.5 => zoom level 9
+    // scale.log2() =~ 15.5 => zoom level 10
+    // scale.log2() < 7 => zoom level 19 (max)
+    // something like zoom_level = ((26.0 - scale.log2()*1.1).round() as u8).clamp(1, 19);
 }
 
 fn move_cam_once(
@@ -121,10 +128,12 @@ pub fn debug_draw(
                 pointer_pos -= viewport.min;
             }
 
-            let pos = camera
-                .viewport_to_world_2d(cam_global_transform, pointer_pos)
-                .unwrap()
-                / TILE_SIZE;
+            let pos = if let Ok(pos) = camera.viewport_to_world_2d(cam_global_transform, pointer_pos) {
+                pos / TILE_SIZE
+            } else {
+                continue;
+            };
+
             let coords = get_projection(3857)
                 .unwrap()
                 .projected_to_deg(pos.x as f64, pos.y as f64);
