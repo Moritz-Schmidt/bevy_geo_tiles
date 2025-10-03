@@ -1,0 +1,13 @@
+[package]
+name = "bevy_geo_tiles"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy = { version = "0.17.1", features = ["bevy_dev_tools", "dynamic_linking", "http", "https"] }
+bevy_pancam = "0.19.0"
+proj = "0.31.0"
+tilemath = "0.3.0"
+
+[profile.dev]
+opt-level = 3

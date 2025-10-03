@@ -1,0 +1,39 @@
+# cranelift compiler backend
+[unstable]
+codegen-backend = true
+
+[profile.dev]
+codegen-backend = "cranelift"
+opt-level = 3 # minimal benefit of reducing opt level here, cranelift perf is already bad enough
+
+# compile deps with llvm still for runtime perf
+[profile.dev.package."*"]
+codegen-backend = "llvm"
+opt-level = 3
+
+[target.x86_64-unknown-linux-gnu]
+
+rustflags = [
+  # Nightly
+  "-Zshare-generics=y",
+  "-Zthreads=0",
+]
+
+# NOTE: you must install [Mach-O LLD Port](https://lld.llvm.org/MachO/index.html) on mac. you can easily do this by installing llvm which includes lld with the "brew" package manager:
+# `brew install llvm`
+[target.x86_64-apple-darwin]
+rustflags = [
+  "-C",
+  "link-arg=-fuse-ld=/usr/local/opt/llvm/bin/ld64.lld",
+  "-Zshare-generics=y",
+]
+
+[target.aarch64-apple-darwin]
+rustflags = [
+"-Zshare-generics=y",
+]
+
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"
+# cannot use share-generics on windows due to dynamic_linking symbol limit
+rustflags = ["-Zshare-generics=n"]
