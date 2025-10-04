@@ -9,7 +9,7 @@ fn main() {
             DefaultPlugins
                 .set(LogPlugin {
                     filter:
-                        "info,wgpu_core=warn,wgpu_hal=warn,naga=warn,ureq=info,bevy_asset=debug"
+                        "info,wgpu_core=warn,wgpu_hal=warn,naga=warn,ureq=info,bevy_asset=debug,bevy_geo_tiles=debug"
                             .into(),
                     level: bevy::log::Level::DEBUG,
                     ..Default::default()
