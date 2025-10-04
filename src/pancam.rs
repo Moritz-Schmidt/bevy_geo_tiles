@@ -31,7 +31,11 @@ impl Default for SmoothZoom {
 }
 
 fn zoom(scroll: On<Pointer<Scroll>>, mut zoom: Single<&mut SmoothZoom, With<Camera>>) {
-    zoom.target_zoom *= 1.0 - (scroll.y / 50.);
+    let speed = match scroll.unit {
+        bevy::input::mouse::MouseScrollUnit::Line => 0.1,
+        bevy::input::mouse::MouseScrollUnit::Pixel => 0.02,
+    };
+    zoom.target_zoom *= 1.0 - (scroll.y * speed);
 }
 
 fn pinch_zoom(
@@ -51,10 +55,13 @@ fn zoom_smooth(
     cam: Single<(&mut Projection, &mut SmoothZoom), With<Camera>>,
     time: Res<Time>,
 ) {
-    let (proj, mut zoom) = cam.into_inner();
+    let (proj, zoom) = cam.into_inner();
     if let Projection::Orthographic(ref mut proj) = *proj.into_inner() {
         let mut scale_vec = Vec2::new(proj.scale, 0.0);
-        scale_vec.smooth_nudge(&Vec2::new(zoom.target_zoom, 0.0), 30., time.delta_secs());
+        scale_vec.smooth_nudge(&Vec2::new(zoom.target_zoom, 0.0), 20., time.delta_secs());
+        if (proj.scale - scale_vec.x).abs() < 0.001 {
+            return;
+        }
         proj.scale = scale_vec.x;
         commands.trigger(NewScale(proj.scale));
     }

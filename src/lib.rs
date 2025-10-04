@@ -1,29 +1,93 @@
 use bevy::{
-    log::tracing_subscriber::field::debug, math::bounding::{Aabb2d, BoundingVolume, IntersectsVolume}, picking::pointer::{PointerId, PointerLocation}, platform::collections::HashSet, prelude::*, sprite::Text2dShadow, window::PrimaryWindow
+    log::tracing_subscriber::field::debug, math::bounding::{Aabb2d, BoundingVolume, IntersectsVolume}, picking::pointer::PointerLocation, platform::collections::HashSet, prelude::*, sprite::Text2dShadow, window::PrimaryWindow
 };
 
-use crate::pancam::{NewScale, SmoothZoom};
-use miniproj::get_projection;
-use tilemath::{bbox_covered_tiles, BBox, Tile as TileMathTile, WEB_MERCATOR_EXTENT};
+use crate::{coord_conversions::ToTileCoords, pancam::{pancam_plugin, NewScale, SmoothZoom}};
+use tilemath::{bbox_covered_tiles, BBox, Tile as TileMathTile, TileIterator, WEB_MERCATOR_EXTENT};
 
 mod pancam;
-use pancam::pancam_plugin;
+mod coord_conversions;
+pub use coord_conversions::{Convert, ToBBox, WebMercatorConversion};
 
-const TILE_SIZE: f32 = 256.;
+pub const TILE_SIZE: f32 = 256.;
 
-pub struct MapPlugin;
+pub struct MapPlugin {
+    /// Initial zoom level of the map, between 1 and 19
+    pub initial_zoom: u8,
+    /// Initial center of the map in lon/lat (EPSG:4326 / WGS84)
+    pub initial_center: Vec2
+}
+
+impl Default for MapPlugin {
+    fn default() -> Self {
+        Self {
+            initial_zoom: 9,
+            initial_center: Vec2::new(13.4050, 52.5200), // Berlin
+        }
+    }
+}
+
+#[derive(Resource, Debug, Clone)]
+pub struct MapConfig {
+    zoom: u8,
+    center: Vec2
+}
 
 impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(pancam_plugin)
-            .add_systems(Startup, (setup))
-            .add_systems(PostStartup, (move_cam_once, spawn_map_view).chain())
+            .insert_resource(MapConfig {
+                zoom: self.initial_zoom.clamp(1, 19),
+                center: self.initial_center,
+            })
+            .add_systems(PostStartup, (setup_camera, setup_map_view).chain())
             .add_systems(Update, (debug_draw, viewport_tiles))
             .add_observer(map_view_changed)
             .add_observer(handle_zoom_level);
     }
 }
 
+fn setup_camera(
+    map_config: Res<MapConfig>,
+    mut cam: Single<(&mut Transform, &mut SmoothZoom), (With<Camera>,Without<Tile>)>,
+) {
+    debug!("Map config: {:?}", map_config);
+    let (mut cam_transform, mut smooth_zoom) = cam.into_inner();
+    let cam_world = map_config.center.lonlat_to_world();
+    
+    cam_transform.translation = cam_world.extend(1.0);
+    let scale = (1 << (19 - map_config.zoom)) as f32; //TODO: use better formula
+    smooth_zoom.target_zoom = scale;
+}
+
+fn setup_map_view(
+    map_config: Res<MapConfig>,
+    camera_query: Single<(&Camera, &GlobalTransform)>,
+    mut commands: Commands,
+) {
+    let (camera, cam_global_transform) = camera_query.into_inner();
+    let Some(viewport) = camera.logical_viewport_rect() else {
+        return;
+    };
+
+    let top_right = camera.viewport_to_world_2d(cam_global_transform, Vec2::new(viewport.max.x, viewport.min.y));
+    let bottom_left = camera.viewport_to_world_2d(cam_global_transform, Vec2::new(viewport.min.x, viewport.max.y));
+    let (top_right, bottom_left) = if let (Ok(tr), Ok(bl)) = (top_right, bottom_left) {
+        (tr, bl)
+    } else {
+        return;
+    };
+    let bbox = Aabb2d {
+        min: bottom_left,
+        max: top_right,
+    };
+    let tile_bbox = bbox.world_to_tile_coords(map_config.zoom);
+    commands.spawn(MapView {
+        zoom: map_config.zoom,
+        bbox,
+        tile_bbox,
+    });
+}
 
 
 #[derive(Component, Debug, Clone)]
@@ -44,7 +108,7 @@ impl MapView {
         if tile.0.zoom != self.zoom {
             return false;
         }
-        let tile_bbox = tile.0.bounds(TILE_SIZE as u16);
+        let tile_bbox = tile.0.bounds(1);
         let tile_aabb = Aabb2d {
             min: Vec2::new(tile_bbox.min_x as f32, tile_bbox.min_y as f32),
             max: Vec2::new(tile_bbox.max_x as f32, tile_bbox.max_y as f32),
@@ -56,117 +120,14 @@ impl MapView {
 #[derive(Event, Debug)]
 struct MapViewChanged;
 
-
-fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
-    let proj = get_projection(3857).unwrap();
-    let (max_x, max_y) = proj.deg_to_projected(14.261350595825427, 54.963283243087496);
-    let (min_x, min_y) = proj.deg_to_projected(5.5437553459687186, 46.2960593038139);
-    let bbox = BBox {
-        min_x,
-        min_y,
-        max_x,
-        max_y,
-    };
-    let zoom = 8;
-    let tiles = bbox_covered_tiles(&bbox, zoom).collect::<Vec<_>>();
-    info!("Tiles to load: {:?}", tiles);
-    for tile in tiles {
-        info!("Loading tile: {:?}", tile);
-        let tms_tile = tile.to_reversed_y();
-        let url = format!(
-            "https://mapproxy.dmho.de/tms/1.0.0/thunderforest_transport/EPSG3857/{}/{}/{}.png",
-            tms_tile.zoom - 1,
-            tms_tile.x,
-            tms_tile.y
-        );
-        let bbox = tile.bounds(TILE_SIZE as u16);
-        let bbox = Aabb2d {
-            max: Vec2::new(bbox.max_x as f32, bbox.max_y as f32),
-            min: Vec2::new(bbox.min_x as f32, bbox.min_y as f32),
-        };
-
-        let image: Handle<Image> = asset_server.load(url.clone());
-        commands.spawn((
-            Sprite { image, ..default() },
-            Transform::from_translation(bbox.center().extend(1.0) * (TILE_SIZE + 1.)) // TODO: + 1 to have visible gap to differentiate tiles for testing
-                .with_scale((bbox.half_size() * 2.).extend(1.0)),
-            Tile(tile),
-        ));
-
-        // TODO: no clue why these appear at the lower edge of the tile...
-        commands.spawn((
-            Sprite {
-                custom_size: Some(Vec2::new(20., 20.)),
-                color: Color::linear_rgb(1.0, 0.0, 0.0),
-                ..Default::default()
-            },
-            Transform::from_translation(bbox.center().extend(1.1) * TILE_SIZE)
-                .with_scale((bbox.half_size() * 2.).extend(1.0)),
-        ));
-    }
-}
-
 fn handle_zoom_level(scale: On<NewScale>) {
-    //dbg!(scale.event().log2());
-    // TODO: convert to zoom level somehow. Seems plausible 1 scale == 1 zoom level, but the tiles loaded with zoom leve 9
-    // look good at scale ~17 on my screen.
-
-    // scale.log2() > 22 => zoom level 1 (min)
+    dbg!(scale.event().log2());
+    // dbg!(scale.event().log2());
     // scale.log2() =~ 21.5 => zoom level 4
     // scale.log2() =~ 16.5 => zoom level 9
     // scale.log2() =~ 15.5 => zoom level 10
     // scale.log2() < 7 => zoom level 19 (max)
     // something like zoom_level = ((26.0 - scale.log2()*1.1).round() as u8).clamp(1, 19);
-}
-
-fn move_cam_once(
-    mut cam: Single<(&mut Transform, &mut SmoothZoom), (With<Camera>, Without<Tile>)>,
-    tile: Query<(&Transform), (With<Tile>, Without<Camera>)>,
-) {
-    let tile = tile.iter().next().unwrap();
-    cam.0.translation = tile.translation;
-    cam.1.target_zoom = tile.scale.x.max(tile.scale.y); // "good enough" approximation to see something useful
-}
-
-fn spawn_map_view(
-    camera_query: Single<(&Camera, &GlobalTransform)>,
-    mut commands: Commands,
-) {
-    let (camera, cam_global_transform) = camera_query.into_inner();
-    let Some(viewport) = camera.logical_viewport_rect() else {
-        return;
-    };
-
-    let top_right = camera.viewport_to_world_2d(cam_global_transform, Vec2::new(viewport.max.x, viewport.min.y));
-    let bottom_left = camera.viewport_to_world_2d(cam_global_transform, Vec2::new(viewport.min.x, viewport.max.y));
-    let (top_right, bottom_left) = if let (Ok(tr), Ok(bl)) = (top_right, bottom_left) {
-        (tr / TILE_SIZE, bl / TILE_SIZE)
-    } else {
-        return;
-    };
-    let bbox = Aabb2d {
-        min: bottom_left,
-        max: top_right,
-    };
-    let tile_size_meters = (WEB_MERCATOR_EXTENT as f32 * 2.0) / f32::from((1 << 9) as i16);
-    let tile_bbox = Aabb2d {
-            min: Vec2::new(
-                ((bbox.min.x + WEB_MERCATOR_EXTENT as f32) / tile_size_meters).floor(),
-                ((WEB_MERCATOR_EXTENT as f32 - bbox.min.y) / tile_size_meters).ceil() - 1.0
-            ),
-            max: Vec2::new(
-                ((bbox.max.x + WEB_MERCATOR_EXTENT as f32) / tile_size_meters).ceil() - 1.0,
-                ((WEB_MERCATOR_EXTENT as f32 - bbox.max.y) / tile_size_meters).floor()
-            ),
-        };
-    commands.spawn((
-        MapView {
-            zoom: 8,
-            bbox,
-            tile_bbox,
-        },
-    ));
-    debug!("Spawned initial map view: {:?}", bbox);
 }
 
 pub fn debug_draw(
@@ -195,16 +156,12 @@ pub fn debug_draw(
                 pointer_pos -= viewport.min;
             }
 
-            let pos = if let Ok(pos) = camera.viewport_to_world_2d(cam_global_transform, pointer_pos) {
-                pos / TILE_SIZE
-            } else {
+            let Ok(pos) = camera.viewport_to_world_2d(cam_global_transform, pointer_pos) else {
                 continue;
             };
 
-            let coords = get_projection(3857)
-                .unwrap()
-                .projected_to_deg(pos.x as f64, pos.y as f64);
-            let text = format!("Lat: {}, Lon: {}", coords.1, coords.0);
+            let coords = pos.world_to_lonlat();
+            let text = format!("Lat: {}, Lon: {}", coords.y, coords.x);
 
             commands
                 .entity(entity)
@@ -241,7 +198,7 @@ fn viewport_tiles(
     let top_right = camera.viewport_to_world_2d(cam_global_transform, Vec2::new(viewport.max.x, viewport.min.y));
     let bottom_left = camera.viewport_to_world_2d(cam_global_transform, Vec2::new(viewport.min.x, viewport.max.y));
     let (top_right, bottom_left) = if let (Ok(tr), Ok(bl)) = (top_right, bottom_left) {
-        (tr / TILE_SIZE, bl / TILE_SIZE)
+        (tr, bl)
     } else {
         return;
     };
@@ -250,17 +207,7 @@ fn viewport_tiles(
         max: top_right,
     };
     if map_view.bbox != bbox {
-        let tile_size_meters = (WEB_MERCATOR_EXTENT as f32 * 2.0) / f32::from((1 << map_view.zoom) as i16);
-        let tile_bbox = Aabb2d {
-            min: Vec2::new(
-                ((bbox.min.x + WEB_MERCATOR_EXTENT as f32) / tile_size_meters).floor(),
-                ((WEB_MERCATOR_EXTENT as f32 - bbox.min.y) / tile_size_meters).ceil() - 1.0
-            ),
-            max: Vec2::new(
-                ((bbox.max.x + WEB_MERCATOR_EXTENT as f32) / tile_size_meters).ceil() - 1.0,
-                ((WEB_MERCATOR_EXTENT as f32 - bbox.max.y) / tile_size_meters).floor()
-            ),
-        };
+        let tile_bbox = bbox.world_to_tile_coords(map_view.zoom);
         map_view.bbox = bbox;
         if map_view.tile_bbox != tile_bbox {
             map_view.tile_bbox = tile_bbox;
@@ -270,7 +217,7 @@ fn viewport_tiles(
 }
 
 fn map_view_changed(
-    event: On<MapViewChanged>,
+    _event: On<MapViewChanged>,
     mut commands: Commands,
     map_view: Single<&MapView>,
     tiles_rendered: Query<(Entity, Option<&Tile>)>,
@@ -278,13 +225,12 @@ fn map_view_changed(
 ) {
     let map_view = map_view.into_inner();
     debug!("Map view changed: {:?}", map_view);
-    let bbox = BBox {
-        min_x: map_view.bbox.min.x as f64,
-        min_y: map_view.bbox.min.y as f64,
-        max_x: map_view.bbox.max.x as f64,
-        max_y: map_view.bbox.max.y as f64,
-    };
-    let tiles_in_view = bbox_covered_tiles(&bbox, map_view.zoom).collect::<HashSet<_>>();
+
+    let tiles_in_view = TileIterator::new(
+        map_view.zoom,
+        (map_view.tile_bbox.min.x as u32)..=(map_view.tile_bbox.max.x as u32),
+        (map_view.tile_bbox.min.y as u32)..=(map_view.tile_bbox.max.y as u32),
+    ).collect::<HashSet<_>>();
     
     
     let tiles_to_render = tiles_in_view
@@ -301,6 +247,7 @@ fn map_view_changed(
             commands.entity(entity).despawn();
         }
     }
+    let tile_coord_limit = (2 as u32).pow(map_view.zoom as u32) - 1;
 
     for tile in tiles_to_render {
         info!("Loading tile: {:?}", tile);
@@ -308,10 +255,10 @@ fn map_view_changed(
         let url = format!(
             "https://mapproxy.dmho.de/tms/1.0.0/thunderforest_transport/EPSG3857/{}/{}/{}.png",
             tms_tile.zoom - 1,
-            tms_tile.x,
-            tms_tile.y
+            tms_tile.x % (tile_coord_limit + 1),
+            tms_tile.y.clamp(0, tile_coord_limit)
         );
-        let bbox = tile.bounds(TILE_SIZE as u16);
+        let bbox = tile.bounds(1);
         let bbox = Aabb2d {
             max: Vec2::new(bbox.max_x as f32, bbox.max_y as f32),
             min: Vec2::new(bbox.min_x as f32, bbox.min_y as f32),
@@ -319,18 +266,23 @@ fn map_view_changed(
 
         let image: Handle<Image> = asset_server.load(url.clone());
         commands.spawn((
-            Sprite { image, ..default() },
-            Transform::from_translation(bbox.center().extend(1.0) * (TILE_SIZE + 1.)) // TODO: + 1 to have visible gap to differentiate tiles for testing
+            Sprite {
+                image,
+                custom_size: Some(Vec2::ONE),
+                ..default()
+            },
+            Transform::from_translation(bbox.center().extend(1.0))
                 .with_scale((bbox.half_size() * 2.).extend(1.0)),
             Tile(tile),
         ));
 
-        // TODO: no clue why these appear at the lower edge of the tile...
+
         commands.spawn((
             Text2d::new(format!("{}/{}/{}", tile.zoom, tile.x, tile.y)),
-            TextFont::from_font_size(20.0),
-            Transform::from_translation(bbox.center().extend(1.1) * TILE_SIZE)
-                .with_scale((bbox.half_size() * 2.).extend(1.0)),
+            Text2dShadow {offset: Vec2::new(4.0, -4.0), ..Default::default()},
+            TextFont::from_font_size(200.0),
+            Transform::from_translation(bbox.center().extend(1.1))
+                .with_scale((bbox.half_size() * 0.001).extend(1.0)),
             Tile(tile),
         ));
     }
