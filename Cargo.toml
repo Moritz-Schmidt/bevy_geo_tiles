@@ -4,13 +4,15 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bevy = { version = "0.17.1", features = [
+bevy = { version = "0.17", features = [
     "bevy_dev_tools",
     "dynamic_linking",
     "http",
     "https",
+    "track_location",
 ] }
 miniproj = "0.10"
+miniproj-ops = "0.10"
 tilemath = "0.3.0"
 
 [profile.dev]
