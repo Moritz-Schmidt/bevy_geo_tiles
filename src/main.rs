@@ -21,7 +21,7 @@ fn main() {
         )
         .add_plugins(FpsOverlayPlugin::default())
         .add_plugins(MapPlugin {
-            initial_zoom: 5,
+            initial_zoom: 15,
             initial_center: (13.4064, 52.51977).into(),
         })
         .run();

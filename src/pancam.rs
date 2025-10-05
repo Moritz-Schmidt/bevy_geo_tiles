@@ -9,7 +9,6 @@ pub(crate) fn pancam_plugin(app: &mut App) {
 pub struct MainCam;
 
 fn setup(mut commands: Commands, window: Single<Entity, With<Window>>) {
-    commands.spawn((Camera2d, SmoothZoom::default(), MainCam));
     commands.entity(*window).observe(camera_drag).observe(zoom);
 }
 
@@ -25,11 +24,11 @@ fn camera_drag(
 
 #[derive(Component, Debug)]
 pub(crate) struct SmoothZoom {
-    pub(crate) target_zoom: f32,
+    pub(crate) target_scale: f32,
 }
 impl Default for SmoothZoom {
     fn default() -> Self {
-        Self { target_zoom: 1.0 }
+        Self { target_scale: 1.0 }
     }
 }
 
@@ -38,7 +37,7 @@ fn zoom(scroll: On<Pointer<Scroll>>, mut zoom: Single<&mut SmoothZoom, With<Came
         bevy::input::mouse::MouseScrollUnit::Line => 0.1,
         bevy::input::mouse::MouseScrollUnit::Pixel => 0.02,
     };
-    zoom.target_zoom *= 1.0 - (scroll.y * speed);
+    zoom.target_scale *= 1.0 - (scroll.y * speed);
 }
 
 fn pinch_zoom(
@@ -46,12 +45,12 @@ fn pinch_zoom(
     mut zoom: Single<&mut SmoothZoom, With<Camera>>,
 ) {
     for p in pinch.read() {
-        zoom.target_zoom *= 1.0 - (p.0)
+        zoom.target_scale *= 1.0 - (p.0)
     }
 }
 
-#[derive(Event, Debug, Deref)]
-pub(crate) struct NewScale(f32);
+#[derive(Event, Debug)]
+pub(crate) struct NewScale(pub f32);
 
 fn zoom_smooth(
     mut commands: Commands,
@@ -60,12 +59,12 @@ fn zoom_smooth(
 ) {
     let (proj, zoom) = cam.into_inner();
     if let Projection::Orthographic(ref mut proj) = *proj.into_inner() {
-        let mut scale_vec = Vec2::new(proj.scale, 0.0);
-        scale_vec.smooth_nudge(&Vec2::new(zoom.target_zoom, 0.0), 20., time.delta_secs());
-        if (proj.scale - scale_vec.x).abs() < 0.001 {
+        let mut new_scale = proj.scale;
+        new_scale.smooth_nudge(&zoom.target_scale, 20., time.delta_secs());
+        if (proj.scale - new_scale).abs() < 0.001 {
             return;
         }
-        proj.scale = scale_vec.x;
-        commands.trigger(NewScale(proj.scale));
+        proj.scale = new_scale;
+        commands.trigger(NewScale(new_scale));
     }
 }

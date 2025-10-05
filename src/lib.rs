@@ -1,7 +1,8 @@
-use std::cmp::Reverse;
+use std::{cmp::Reverse, ops::RangeInclusive};
 
 use bevy::{
     camera::visibility::VisibleEntities,
+    ecs::system::SystemParam,
     math::bounding::{Aabb2d, BoundingVolume, IntersectsVolume},
     picking::pointer::PointerLocation,
     platform::collections::{HashMap, HashSet},
@@ -21,7 +22,12 @@ mod pancam;
 pub use coord_conversions::{ToBBox, ToTileCoords, ViewportConv, WebMercatorConversion};
 
 pub const TILE_SIZE: f32 = 256.;
+pub const ZOOM_RANGE: RangeInclusive<u8> = 0..=17;
 
+// How many tiles to keep loaded
+const KEEP_UNUSED_TILES: usize = 1000;
+// increase this to make zoom levels "further away" for cleanup logic - closer tiles will be cleaned later
+const ZOOM_DISTANCE_FACTOR: u32 = 10;
 pub struct MapPlugin {
     /// Initial zoom level of the map, between 1 and 19
     pub initial_zoom: u8,
@@ -40,21 +46,30 @@ impl Default for MapPlugin {
 
 impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
-        let zoom = self.initial_zoom.clamp(1, 19);
-        let target_zoom = (1 << (19 - self.initial_zoom)) as f32; //TODO: use better formula
+        let zoom = self
+            .initial_zoom
+            .clamp(*ZOOM_RANGE.start(), *ZOOM_RANGE.end());
+        let target_zoom = 2f32.powf(17.25 - zoom as f32 + 0.5); // formula from below, zoomed out a bit further
         let translation = self.initial_center.lonlat_to_world().extend(1.0);
         app.add_plugins(pancam_plugin)
             .add_systems(
-                PostStartup,
-                (
-                    move |mut cam: Single<(&mut Transform, &mut SmoothZoom), With<MainCam>>| {
-                        cam.0.translation = translation;
-                        cam.1.target_zoom = target_zoom;
-                    },
-                    move |mut commands: Commands| {
-                        commands.spawn(MapZoom(zoom));
-                    },
-                ),
+                Startup,
+                (move |mut commands: Commands| {
+                    commands
+                        .spawn((
+                            Camera2d,
+                            SmoothZoom::default(),
+                            MainCam,
+                            Transform::from_translation(translation)
+                                .with_scale(Vec3::splat(target_zoom)),
+                            Zoom(zoom),
+                        ))
+                        .with_related_entities::<ZoomOf>(|rel_c| {
+                            for z in ZOOM_RANGE {
+                                rel_c.spawn((Zoom(z), Transform::default(), Visibility::Inherited));
+                            }
+                        });
+                },),
             )
             .add_systems(Update, (debug_draw, spawn_new_tiles, despawn_old_tiles))
             .init_resource::<ExistingTilesSet>()
@@ -66,21 +81,71 @@ impl Plugin for MapPlugin {
 }
 
 /// The zoom level of the map view
-#[derive(Component, Debug, Clone, Deref)]
-struct MapZoom(u8);
+#[derive(Component)]
+#[relationship(relationship_target = ZoomLevels)]
+pub struct ZoomOf(Entity);
+
+#[derive(Component)]
+#[relationship_target(relationship = ZoomOf, linked_spawn)] // linked_spawn == despawn related
+pub struct ZoomLevels(Vec<Entity>);
+
+#[derive(Component, Eq, PartialEq)]
+pub struct Zoom(u8);
+
+#[derive(SystemParam)]
+struct ZoomHelper<'w, 's, M: Component> {
+    cam: Single<'w, 's, (&'static Zoom, &'static ZoomLevels), With<M>>,
+}
+
+impl<'w, 's, M: Component> ZoomHelper<'w, 's, M> {
+    fn level_entity(&self) -> Entity {
+        self.cam.1.iter().nth(self.cam.0.0 as usize).unwrap()
+    }
+    fn level(&self) -> u8 {
+        self.cam.0.0
+    }
+}
 
 #[derive(Component, Debug)]
 #[component(immutable)]
 struct Tile(TileMathTile);
 
-fn handle_zoom_level(scale: On<NewScale>) {
+fn handle_zoom_level(
+    scale: On<NewScale>,
+    cam: Single<(&mut Zoom, &ZoomLevels), Without<ZoomOf>>,
+    mut zooms: Query<(&Zoom, &mut Transform, &mut Visibility), (With<ZoomOf>, Without<ZoomLevels>)>,
+) {
+    let (mut zoom, levels) = cam.into_inner();
+    // https://www.desmos.com/calculator/dkbfdjvcfx
+    let x: f32 = scale.event().0;
+    zoom.0 = ((15.25 - x.log2()) as u8).clamp(*ZOOM_RANGE.start(), *ZOOM_RANGE.end());
+
+    for e in levels.iter() {
+        let (level, mut tr, mut vis) = zooms.get_mut(e).unwrap();
+        if level.0 == zoom.0 {
+            *vis = Visibility::Inherited;
+            tr.translation.z = 0.99;
+        } else if level.0 == zoom.0.saturating_sub(1) {
+            *vis = Visibility::Inherited;
+            tr.translation.z = 0.5;
+        } else if level.0 == zoom.0.saturating_add(1) {
+            *vis = Visibility::Inherited;
+            tr.translation.z = 0.2;
+        } else {
+            *vis = Visibility::Hidden;
+            tr.translation.z = 0.0;
+        }
+    }
+    // qry: Query<(&Tile,)>, view: ViewportConv<MainCam>
     // dbg!(scale.event().log2());
-    // dbg!(scale.event().log2());
-    // scale.log2() =~ 21.5 => zoom level 4
-    // scale.log2() =~ 16.5 => zoom level 9
-    // scale.log2() =~ 15.5 => zoom level 10
-    // scale.log2() < 7 => zoom level 19 (max)
-    // something like zoom_level = ((26.0 - scale.log2()*1.1).round() as u8).clamp(1, 19);
+    // let tile = qry.iter().next().unwrap();
+    // let aabb2 = tile_to_aabb(tile.0.0);
+    // let left2 = view.world_to_viewport(aabb2.max.extend(0.)).unwrap();
+    // let right2 = view
+    //     .world_to_viewport(Vec2::new(aabb2.min.x, aabb2.max.y).extend(0.))
+    //     .unwrap();
+    // let tile_edge_width_in_pixels = left2.distance(right2);
+    // dbg!(tile_edge_width_in_pixels);
 }
 
 #[derive(Component, Debug)]
@@ -129,8 +194,8 @@ fn new_tile(tile: TileMathTile) -> impl Bundle {
                 offset: Vec2::new(2.0, -2.0),
                 ..Default::default()
             },
-            TextFont::from_font_size(20.0),
-            Transform::from_scale(Vec3::ONE / 100.).with_translation(Vec3::Z),
+            TextFont::from_font_size(100.0),
+            Transform::from_scale(Vec3::ONE / 1024.).with_translation(Vec3::Z),
         )],
     )
 }
@@ -159,44 +224,42 @@ fn tile_replaced(
 
 fn spawn_new_tiles(
     mut commands: Commands,
-    zoom: Single<&MapZoom>,
+    zoom: ZoomHelper<MainCam>,
     view: ViewportConv<MainCam>,
     existing_tiles: Res<ExistingTilesSet>,
 ) -> Result<()> {
-    let zoom = zoom.0;
-    let bbox = view.visible_aabb()?.world_to_tile_coords(zoom);
+    let bbox = view.visible_aabb()?.world_to_tile_coords(zoom.level());
     let current_view_tiles = TileIterator::new(
-        zoom,
+        zoom.level(),
         (bbox.min.x as u32)..=(bbox.max.x as u32),
         (bbox.min.y as u32)..=(bbox.max.y as u32),
     )
     .collect::<HashSet<_>>();
     let diff = current_view_tiles.difference(&existing_tiles.0);
     for tile in diff {
-        commands.spawn(new_tile(*tile));
+        commands
+            .entity(zoom.level_entity())
+            .with_child(new_tile(*tile));
     }
     Ok(())
 }
 
-const ZOOM_DISTANCE_FACTOR: u32 = 10;
-
 fn despawn_old_tiles(
     mut commands: Commands,
-    zoom: Single<&MapZoom>,
+    zoom: ZoomHelper<MainCam>,
     view: ViewportConv<MainCam>,
     tiles: Query<(Entity, &Tile, &ViewVisibility)>,
 ) -> Result<()> {
     let tiles = tiles.iter().filter(|(_, _, vis)| !vis.get());
-    if dbg!(tiles.clone().count()) < 1000 {
+    if tiles.clone().count() < KEEP_UNUSED_TILES {
         return Ok(());
     }
     let mut tiles = tiles.collect::<Vec<_>>();
-    let zoom = zoom.0;
     let center = view
         .viewport_center_world()
         .unwrap()
-        .world_to_tile_coords(zoom);
-    let me = center.extend(zoom as u32 * ZOOM_DISTANCE_FACTOR);
+        .world_to_tile_coords(zoom.level());
+    let me = center.extend(zoom.level() as u32 * ZOOM_DISTANCE_FACTOR);
     // manhattan distance is cheap and good enough. maybe even better for this than euclidian
     tiles.sort_unstable_by_key(|(_, a, _)| {
         me.manhattan_distance(UVec3::new(
@@ -205,12 +268,9 @@ fn despawn_old_tiles(
             a.0.zoom as u32 * ZOOM_DISTANCE_FACTOR,
         ))
     });
-    let mut count = 0;
-    for (e, _, _) in tiles.iter().skip(1000) {
+    for (e, _, _) in tiles.iter().skip(KEEP_UNUSED_TILES) {
         commands.entity(*e).despawn();
-        count += 1;
     }
-    dbg!(&count);
     Ok(())
 }
 
