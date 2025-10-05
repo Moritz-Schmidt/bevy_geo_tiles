@@ -108,25 +108,23 @@ fn tile_url_to_sprite(
 }
 
 fn new_tile(tile: TileMathTile) -> impl Bundle {
-    let tms_tile = dbg!(tile);
-    let tile_coord_limit = (2 as u32).pow(tile.zoom as u32) - 1;
+    //let tile_coord_limit = (2 as u32).pow(tile.zoom as u32) - 1;
 
     let url = format!(
         "https://mapproxy.dmho.de/tms/1.0.0/thunderforest_transport/EPSG3857/{}/{}/{}.png",
-        tms_tile.zoom - 1,
-        tms_tile.x, // % (tile_coord_limit + 1),
-        tms_tile.y, //.clamp(0, tile_coord_limit)
+        tile.zoom - 1,
+        tile.x, // % (tile_coord_limit + 1),
+        tile.y, //.clamp(0, tile_coord_limit)
     );
-    let bbox = tile_to_aabb(tms_tile);
-    dbg!(bbox);
+    let bbox = tile_to_aabb(tile);
 
     (
         TileUrl(url),
-        Transform::from_translation(dbg!(bbox.center()).extend(1.0))
+        Transform::from_translation(bbox.center().extend(1.0))
             .with_scale((bbox.half_size() * 2.).extend(1.0)),
         Tile(tile),
         children![(
-            Text2d::new(format!("{}/{}/{}", tms_tile.zoom, tms_tile.x, tms_tile.y)),
+            Text2d::new(format!("{}/{}/{}", tile.zoom, tile.x, tile.y)),
             Text2dShadow {
                 offset: Vec2::new(2.0, -2.0),
                 ..Default::default()
@@ -166,23 +164,16 @@ fn spawn_new_tiles(
     existing_tiles: Res<ExistingTilesSet>,
 ) -> Result<()> {
     let zoom = zoom.0;
-    let bbox = dbg!(dbg!(view.visible_aabb()?).world_to_tile_coords(zoom));
-    dbg!(tile_to_aabb(TileMathTile {
-        x: bbox.center().x as u32,
-        y: bbox.center().y as u32,
-        zoom
-    }));
+    let bbox = view.visible_aabb()?.world_to_tile_coords(zoom);
     let current_view_tiles = TileIterator::new(
         zoom,
         (bbox.min.x as u32)..=(bbox.max.x as u32),
         (bbox.min.y as u32)..=(bbox.max.y as u32),
     )
     .collect::<HashSet<_>>();
-    let mut spawn_count = 0;
     let diff = current_view_tiles.difference(&existing_tiles.0);
     for tile in diff {
         commands.spawn(new_tile(*tile));
-        spawn_count += 1;
     }
     Ok(())
 }
@@ -193,7 +184,7 @@ fn despawn_old_tiles(
     view: ViewportConv<MainCam>,
     tiles_not_rendered: Query<(Entity, &Tile), Without<VisibleEntities>>,
 ) -> Result<()> {
-    if tiles_not_rendered.iter().len() < 3000 {
+    if tiles_not_rendered.iter().len() < 1000 {
         return Ok(());
     }
     let zoom = zoom.0;
@@ -209,8 +200,8 @@ fn despawn_old_tiles(
             me.manhattan_distance(UVec3::new(a.0.x, a.0.y, a.0.zoom as u32 * 10))
         });
     let mut count = 0;
-    for (e, _) in sorted.skip(3000) {
-        // commands.entity(e).despawn();
+    for (e, _) in sorted.skip(1000) {
+        commands.entity(e).despawn();
         count += 1;
     }
     dbg!(&count);

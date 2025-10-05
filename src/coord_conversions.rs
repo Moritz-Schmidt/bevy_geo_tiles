@@ -47,16 +47,13 @@ impl<'w, 's, MainCamMarker: Component> ViewportConv<'w, 's, MainCamMarker> {
 
     pub fn visible_aabb(&self) -> Result<Aabb2d> {
         if let Some(viewport) = self.camera.0.logical_viewport_rect() {
-            let mut view = Aabb2d::from_point_cloud(
+            Ok(Aabb2d::from_point_cloud(
                 Isometry2d::IDENTITY,
                 &[
                     self.viewport_to_world_2d(viewport.max)?,
                     self.viewport_to_world_2d(viewport.min)?,
                 ],
-            );
-            // view.max = self.viewport_to_world_2d(view.max)?;
-            // view.min = self.viewport_to_world_2d(view.min)?;
-            Ok(view)
+            ))
         } else {
             todo!()
         }
