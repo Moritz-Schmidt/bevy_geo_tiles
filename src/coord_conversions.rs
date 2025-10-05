@@ -1,12 +1,15 @@
 use bevy::{
     camera::ViewportConversionError,
     ecs::system::SystemParam,
-    math::{DVec2, DVec3, bounding::Aabb2d},
+    math::{
+        DVec2, DVec3,
+        bounding::{Aabb2d, BoundingVolume},
+    },
     prelude::*,
 };
 use miniproj::Projection;
 use miniproj_ops::popvis_pseudo_mercator::PopVisPseudoMercatorProjection;
-use tilemath::BBox;
+use tilemath::{BBox, Tile as TileMathTile};
 
 const WEB_MERCATOR_EXTENT: f64 = 20037508.342789244;
 
@@ -18,11 +21,11 @@ const WEB_MERCATOR: PopVisPseudoMercatorProjection = PopVisPseudoMercatorProject
     false_n: 0f64,
 };
 #[derive(SystemParam)]
-pub struct Convert<'w, 's, MainCamMarker: Component> {
+pub struct ViewportConv<'w, 's, MainCamMarker: Component> {
     camera: Single<'w, 's, (&'static Camera, &'static GlobalTransform), With<MainCamMarker>>,
 }
 
-impl<'w, 's, MainCamMarker: Component> Convert<'w, 's, MainCamMarker> {
+impl<'w, 's, MainCamMarker: Component> ViewportConv<'w, 's, MainCamMarker> {
     pub fn viewport_to_world_2d(&self, viewport_pos: Vec2) -> Result<Vec2> {
         Ok(self
             .camera
@@ -40,6 +43,27 @@ impl<'w, 's, MainCamMarker: Component> Convert<'w, 's, MainCamMarker> {
 
     pub fn latlon_to_viewport(&self, latlon: Vec2) -> Result<Vec2> {
         self.world_to_viewport(latlon.extend(0.0).lonlat_to_world())
+    }
+
+    pub fn visible_aabb(&self) -> Result<Aabb2d> {
+        if let Some(viewport) = self.camera.0.logical_viewport_rect() {
+            let mut view = Aabb2d::from_point_cloud(
+                Isometry2d::IDENTITY,
+                &[
+                    self.viewport_to_world_2d(viewport.max)?,
+                    self.viewport_to_world_2d(viewport.min)?,
+                ],
+            );
+            // view.max = self.viewport_to_world_2d(view.max)?;
+            // view.min = self.viewport_to_world_2d(view.min)?;
+            Ok(view)
+        } else {
+            todo!()
+        }
+    }
+
+    pub fn viewport_center_world(&self) -> Result<Vec2> {
+        Ok(self.visible_aabb()?.center())
     }
 }
 
@@ -126,50 +150,59 @@ pub fn mercator_to_tile_coords(x: f64, y: f64, zoom: u8) -> (u32, u32) {
     let limit = 2u32.pow(zoom as u32) - 1;
 
     (
-        (((x + WEB_MERCATOR_EXTENT) / (2.0 * WEB_MERCATOR_EXTENT) * scale).floor() as u32).clamp(0, limit),
-        (((1.0 - (y + WEB_MERCATOR_EXTENT) / (2.0 * WEB_MERCATOR_EXTENT)) * scale).floor() as u32) % (limit + 1),
+        (((x + WEB_MERCATOR_EXTENT) / (2.0 * WEB_MERCATOR_EXTENT) * scale).floor() as u32)
+            .clamp(0, limit),
+        (((1.0 - (y + WEB_MERCATOR_EXTENT) / (2.0 * WEB_MERCATOR_EXTENT)) * scale).floor() as u32)
+            % (limit + 1),
     )
 }
 
 pub trait ToTileCoords {
-    fn world_to_tile_coords(&self, zoom: u8) -> Self;
-    fn lonlat_to_tile_coords(&self, zoom: u8) -> Self;
+    type Output;
+    fn world_to_tile_coords(&self, zoom: u8) -> Self::Output;
+    fn lonlat_to_tile_coords(&self, zoom: u8) -> Self::Output;
 }
-
 impl ToTileCoords for DVec2 {
-    fn world_to_tile_coords(&self, zoom: u8) -> Self {
-        let (x, y) = mercator_to_tile_coords(self.x, self.y, zoom);
-        DVec2::new(x as f64, y as f64)
+    type Output = UVec2;
+    fn world_to_tile_coords(&self, zoom: u8) -> Self::Output {
+        let scale = (1 << zoom) as f64;
+        let limit = 2u32.pow(zoom as u32) - 1;
+
+        let norm = (self + WEB_MERCATOR_EXTENT) / (2. * WEB_MERCATOR_EXTENT);
+        let scaled = (norm * scale).floor().as_uvec2();
+        UVec2::new(scaled.x.clamp(0, limit), scaled.y % (limit + 1))
     }
 
-    fn lonlat_to_tile_coords(&self, zoom: u8) -> Self {
+    fn lonlat_to_tile_coords(&self, zoom: u8) -> Self::Output {
         self.lonlat_to_world().world_to_tile_coords(zoom)
     }
 }
 
 impl ToTileCoords for Vec2 {
-    fn world_to_tile_coords(&self, zoom: u8) -> Self {
-        self.as_dvec2().world_to_tile_coords(zoom).as_vec2()
+    type Output = UVec2;
+    fn world_to_tile_coords(&self, zoom: u8) -> Self::Output {
+        self.as_dvec2().world_to_tile_coords(zoom)
     }
 
-    fn lonlat_to_tile_coords(&self, zoom: u8) -> Self {
-        self.as_dvec2().lonlat_to_tile_coords(zoom).as_vec2()
+    fn lonlat_to_tile_coords(&self, zoom: u8) -> Self::Output {
+        self.as_dvec2().lonlat_to_tile_coords(zoom)
     }
 }
 
 impl ToTileCoords for Aabb2d {
+    type Output = Self;
     fn world_to_tile_coords(&self, zoom: u8) -> Self {
-        let tile_size_meters = (WEB_MERCATOR_EXTENT * 2.0) / f64::from(1 << zoom);
-        let limit = 2i32.pow(zoom as u32) - 1;
-
-        let min_tile_x = ((self.min.x as f64 + WEB_MERCATOR_EXTENT) / tile_size_meters).floor() as i32;
-        let max_tile_x = ((self.max.x as f64 + WEB_MERCATOR_EXTENT) / tile_size_meters).ceil() as i32 - 1;
-        let min_tile_y = (((WEB_MERCATOR_EXTENT - self.max.y as f64) / tile_size_meters).floor() as i32).clamp(0, limit);
-        let max_tile_y = (((WEB_MERCATOR_EXTENT - self.min.y as f64) / tile_size_meters).ceil() as i32 - 1).clamp(0, limit);
-
+        let scale = (1 << zoom) as f64;
+        let limit = 2u32.pow(zoom as u32) - 1;
+        let norm_max = (self.max.as_dvec2() + WEB_MERCATOR_EXTENT) / (2.0 * WEB_MERCATOR_EXTENT);
+        let tile_max = norm_max * scale;
+        let max_coords = (tile_max.ceil() - 1.0)
+            .max(DVec2::ZERO)
+            .as_uvec2()
+            .min(UVec2::splat(limit));
         Aabb2d {
-            min: Vec2::new(min_tile_x as f32, min_tile_y as f32),
-            max: Vec2::new(max_tile_x as f32, max_tile_y as f32),
+            min: self.min.world_to_tile_coords(zoom).as_vec2(),
+            max: max_coords.as_vec2(),
         }
     }
 
@@ -178,4 +211,19 @@ impl ToTileCoords for Aabb2d {
     }
 }
 
+pub fn tile_to_aabb(tile: TileMathTile) -> Aabb2d {
+    let tile_size = (2.0 * WEB_MERCATOR_EXTENT) / (1u32 << tile.zoom) as f64;
 
+    Aabb2d {
+        min: DVec2::new(
+            tile.x as f64 * tile_size - WEB_MERCATOR_EXTENT,
+            -WEB_MERCATOR_EXTENT + tile.y as f64 * tile_size,
+        )
+        .as_vec2(),
+        max: DVec2::new(
+            (tile.x + 1) as f64 * tile_size - WEB_MERCATOR_EXTENT,
+            -WEB_MERCATOR_EXTENT + (tile.y as f64 + 1.) * tile_size,
+        )
+        .as_vec2(),
+    }
+}

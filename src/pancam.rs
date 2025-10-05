@@ -5,8 +5,11 @@ pub(crate) fn pancam_plugin(app: &mut App) {
         .add_systems(Update, (pinch_zoom, zoom_smooth).chain());
 }
 
+#[derive(Component, Debug)]
+pub struct MainCam;
+
 fn setup(mut commands: Commands, window: Single<Entity, With<Window>>) {
-    commands.spawn((Camera2d, SmoothZoom::default()));
+    commands.spawn((Camera2d, SmoothZoom::default(), MainCam));
     commands.entity(*window).observe(camera_drag).observe(zoom);
 }
 
