@@ -142,18 +142,6 @@ impl ToBBox for Aabb2d {
     }
 }
 
-pub fn mercator_to_tile_coords(x: f64, y: f64, zoom: u8) -> (u32, u32) {
-    let scale = (1 << zoom) as f64;
-    let limit = 2u32.pow(zoom as u32) - 1;
-
-    (
-        (((x + WEB_MERCATOR_EXTENT) / (2.0 * WEB_MERCATOR_EXTENT) * scale).floor() as u32)
-            .clamp(0, limit),
-        (((1.0 - (y + WEB_MERCATOR_EXTENT) / (2.0 * WEB_MERCATOR_EXTENT)) * scale).floor() as u32)
-            % (limit + 1),
-    )
-}
-
 pub trait ToTileCoords {
     type Output;
     fn world_to_tile_coords(&self, zoom: u8) -> Self::Output;
