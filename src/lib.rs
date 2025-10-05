@@ -53,34 +53,100 @@ impl Plugin for MapPlugin {
                     },
                     move |mut commands: Commands| {
                         commands.spawn(MapZoom(zoom));
+                        for lvl in 0..=19 {
+                            commands.spawn((
+                                ZoomLevel(lvl),
+                                Transform::IDENTITY,
+                                Visibility::Visible,
+                            ));
+                        }
                     },
                 ),
             )
             .add_systems(Update, (debug_draw, spawn_new_tiles, despawn_old_tiles))
             .init_resource::<ExistingTilesSet>()
-            .add_observer(handle_zoom_level)
+            .register_type::<MapZoom>()
+            .add_observer(handle_scale_change)
             .add_observer(tile_url_to_sprite)
             .add_observer(tile_inserted)
-            .add_observer(tile_replaced);
+            .add_observer(tile_replaced)
+            .add_observer(handle_zoom_level_change);
     }
 }
 
 /// The zoom level of the map view
-#[derive(Component, Debug, Clone, Deref)]
-struct MapZoom(u8);
+#[derive(Component, Debug, Clone, Deref, Reflect)]
+pub struct MapZoom(pub u8);
+
+/// ZoomLevel as a component with Tiles as children for easier querying
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ZoomLevel(u8);
+
 
 #[derive(Component, Debug)]
 #[component(immutable)]
 struct Tile(TileMathTile);
 
-fn handle_zoom_level(scale: On<NewScale>) {
-    // dbg!(scale.event().log2());
-    // dbg!(scale.event().log2());
-    // scale.log2() =~ 21.5 => zoom level 4
-    // scale.log2() =~ 16.5 => zoom level 9
-    // scale.log2() =~ 15.5 => zoom level 10
-    // scale.log2() < 7 => zoom level 19 (max)
-    // something like zoom_level = ((26.0 - scale.log2()*1.1).round() as u8).clamp(1, 19);
+#[derive(Event, Debug, Clone)]
+struct ZoomLevelChange{
+    old: u8,
+    new: u8,
+}
+
+fn handle_zoom_level_change(
+    change: On<ZoomLevelChange>,
+    mut zoom_level: Query<(&ZoomLevel, &mut Transform)>
+) {
+    let event = change.event();
+
+    let (old_zoom, new_zoom) = (event.old, event.new);
+
+    for (zoom_level, mut transform) in zoom_level.iter_mut() {
+        if zoom_level.0 == old_zoom {
+            transform.translation.z = -0.1; // move old zoom level back
+        } else if zoom_level.0 == new_zoom {
+            transform.translation.z = 0.0; // move new zoom level to front
+        } else {
+            transform.translation.z = -0.2; // move other zoom levels far back
+        }
+    }
+}
+
+fn handle_scale_change(
+    scale: On<NewScale>,
+    mut zoom: Single<&mut MapZoom>,
+    mut commands: Commands
+) {
+    let zoom_level = (-1.031*scale.event().log2() + 17.5).round().clamp(1.0, 19.0) as u8;
+
+    let old_zoom = zoom.0.clone();
+    if zoom_level != zoom.0 {
+        zoom.0 = zoom_level;
+        commands.trigger(ZoomLevelChange{old: old_zoom, new: zoom_level});
+    }
+    /* New:
+        -1.7 19
+        -0.6 18
+        0.5 17
+        1.5 16
+        2.4 15
+        3.4 14
+        4.4 13
+        5.6 12
+        6.3 11
+        7.3 10
+        8.3 9
+        9.4 8
+        10.2 7
+        11.3 6
+        12.2 5
+        13.3 4
+        14 3
+        15 2
+        15.5 1
+        Linear regression gives:
+        zoom_level = -1.031*scale.log2() + 17.5
+     */
 }
 
 #[derive(Component, Debug)]
@@ -123,15 +189,15 @@ fn new_tile(tile: TileMathTile) -> impl Bundle {
         Transform::from_translation(bbox.center().extend(1.0))
             .with_scale((bbox.half_size() * 2.).extend(1.0)),
         Tile(tile),
-        children![(
-            Text2d::new(format!("{}/{}/{}", tile.zoom, tile.x, tile.y)),
-            Text2dShadow {
-                offset: Vec2::new(2.0, -2.0),
-                ..Default::default()
-            },
-            TextFont::from_font_size(20.0),
-            Transform::from_scale(Vec3::ONE / 100.).with_translation(Vec3::Z),
-        )],
+        // children![(
+        //     Text2d::new(format!("{}/{}/{}", tile.zoom, tile.x, tile.y)),
+        //     Text2dShadow {
+        //         offset: Vec2::new(2.0, -2.0),
+        //         ..Default::default()
+        //     },
+        //     TextFont::from_font_size(20.0),
+        //     Transform::from_scale(Vec3::ONE / 100.).with_translation(Vec3::Z),
+        // )],
     )
 }
 
@@ -148,6 +214,7 @@ fn tile_inserted(
     let tile = query.get(insert.entity).unwrap();
     existing.0.insert(tile.0);
 }
+
 fn tile_replaced(
     replace: On<Replace, Tile>,
     query: Query<&Tile>,
@@ -162,6 +229,7 @@ fn spawn_new_tiles(
     zoom: Single<&MapZoom>,
     view: ViewportConv<MainCam>,
     existing_tiles: Res<ExistingTilesSet>,
+    zoom_level: Query<(Entity, &ZoomLevel)>
 ) -> Result<()> {
     let zoom = zoom.0;
     let bbox = view.visible_aabb()?.world_to_tile_coords(zoom);
@@ -172,9 +240,17 @@ fn spawn_new_tiles(
     )
     .collect::<HashSet<_>>();
     let diff = current_view_tiles.difference(&existing_tiles.0);
-    for tile in diff {
-        commands.spawn(new_tile(*tile));
-    }
+    let Some((zoom_entity, _)) = zoom_level.iter().find(|(_, zl)| zl.0 == zoom) else {
+        error!("No ZoomLevel entity found for zoom level {zoom}");
+        return Ok(());
+    };
+    commands.entity(zoom_entity).with_children(|commands| {
+        for tile in diff {
+            commands.spawn(
+                new_tile(*tile)
+            );
+        }
+    });
     Ok(())
 }
 
@@ -187,7 +263,7 @@ fn despawn_old_tiles(
     tiles: Query<(Entity, &Tile, &ViewVisibility)>,
 ) -> Result<()> {
     let tiles = tiles.iter().filter(|(_, _, vis)| !vis.get());
-    if dbg!(tiles.clone().count()) < 1000 {
+    if tiles.clone().count() < 1000 {
         return Ok(());
     }
     let mut tiles = tiles.collect::<Vec<_>>();
@@ -210,7 +286,6 @@ fn despawn_old_tiles(
         commands.entity(*e).despawn();
         count += 1;
     }
-    dbg!(&count);
     Ok(())
 }
 
