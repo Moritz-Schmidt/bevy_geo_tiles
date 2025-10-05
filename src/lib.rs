@@ -178,30 +178,36 @@ fn spawn_new_tiles(
     Ok(())
 }
 
+const ZOOM_DISTANCE_FACTOR: u32 = 10;
+
 fn despawn_old_tiles(
     mut commands: Commands,
     zoom: Single<&MapZoom>,
     view: ViewportConv<MainCam>,
-    tiles_not_rendered: Query<(Entity, &Tile), Without<VisibleEntities>>,
+    tiles: Query<(Entity, &Tile, &ViewVisibility)>,
 ) -> Result<()> {
-    if tiles_not_rendered.iter().len() < 1000 {
+    let tiles = tiles.iter().filter(|(_, _, vis)| !vis.get());
+    if dbg!(tiles.clone().count()) < 1000 {
         return Ok(());
     }
+    let mut tiles = tiles.collect::<Vec<_>>();
     let zoom = zoom.0;
     let center = view
         .viewport_center_world()
         .unwrap()
         .world_to_tile_coords(zoom);
-    dbg!(&center);
-    let me = center.extend(zoom as u32 * 10);
-    let sorted = tiles_not_rendered
-        .iter()
-        .sort_unstable_by_key::<&Tile, _>(|a| {
-            me.manhattan_distance(UVec3::new(a.0.x, a.0.y, a.0.zoom as u32 * 10))
-        });
+    let me = center.extend(zoom as u32 * ZOOM_DISTANCE_FACTOR);
+    // manhattan distance is cheap and good enough. maybe even better for this than euclidian
+    tiles.sort_unstable_by_key(|(_, a, _)| {
+        me.manhattan_distance(UVec3::new(
+            a.0.x,
+            a.0.y,
+            a.0.zoom as u32 * ZOOM_DISTANCE_FACTOR,
+        ))
+    });
     let mut count = 0;
-    for (e, _) in sorted.skip(1000) {
-        commands.entity(e).despawn();
+    for (e, _, _) in tiles.iter().skip(1000) {
+        commands.entity(*e).despawn();
         count += 1;
     }
     dbg!(&count);
