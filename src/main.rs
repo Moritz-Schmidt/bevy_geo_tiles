@@ -1,6 +1,7 @@
 use bevy::dev_tools::fps_overlay::FpsOverlayPlugin;
+use bevy::sprite;
 use bevy::{log::LogPlugin, prelude::*};
-use bevy_geo_tiles::MapPlugin;
+use bevy_geo_tiles::{KeepDisplaySize, MapPlugin, MercatorCoords};
 
 fn main() {
     App::new()
@@ -24,5 +25,18 @@ fn main() {
             initial_zoom: 20,
             initial_center: (13.4064, 52.51977).into(),
         })
+        .add_systems(Startup, create_marker)
         .run();
+}
+
+fn create_marker(mut commands: Commands) {
+    commands.spawn((
+        sprite::Sprite {
+            color: Color::linear_rgb(1.0, 0.0, 0.0),
+            custom_size: Some(Vec2::splat(1.0)),
+            ..Default::default()
+        },
+        MercatorCoords::from_latlon(52.51977, 13.4064).with_z(5.0),
+        KeepDisplaySize,
+    ));
 }

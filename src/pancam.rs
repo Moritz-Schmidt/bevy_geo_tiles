@@ -1,5 +1,7 @@
 use bevy::{input::gestures::PinchGesture, prelude::*};
 
+use crate::MIN_ORTHO_SCALE;
+
 pub(crate) fn pancam_plugin(app: &mut App) {
     app.add_systems(Startup, setup)
         .add_systems(Update, (pinch_zoom, zoom_smooth).chain());
@@ -38,6 +40,7 @@ fn zoom(scroll: On<Pointer<Scroll>>, mut zoom: Single<&mut SmoothZoom, With<Came
         bevy::input::mouse::MouseScrollUnit::Pixel => 0.02,
     };
     zoom.target_scale *= 1.0 - (scroll.y * speed);
+    zoom.target_scale = zoom.target_scale.max(MIN_ORTHO_SCALE);
 }
 
 fn pinch_zoom(
@@ -45,7 +48,8 @@ fn pinch_zoom(
     mut zoom: Single<&mut SmoothZoom, With<Camera>>,
 ) {
     for p in pinch.read() {
-        zoom.target_scale *= 1.0 - (p.0)
+        zoom.target_scale *= 1.0 - (p.0);
+        zoom.target_scale = zoom.target_scale.max(MIN_ORTHO_SCALE);
     }
 }
 
@@ -61,6 +65,7 @@ fn zoom_smooth(
     if let Projection::Orthographic(ref mut proj) = *proj.into_inner() {
         let mut new_scale = proj.scale;
         new_scale.smooth_nudge(&zoom.target_scale, 20., time.delta_secs());
+        new_scale = new_scale.max(MIN_ORTHO_SCALE);
         if (proj.scale - new_scale).abs() < 0.001 {
             return;
         }

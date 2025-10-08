@@ -1,33 +1,41 @@
-use std::{cmp::Reverse, ops::RangeInclusive};
+use std::ops::RangeInclusive;
 
 use bevy::{
-    camera::visibility::VisibleEntities,
-    ecs::system::SystemParam,
-    math::bounding::{Aabb2d, BoundingVolume, IntersectsVolume},
-    picking::pointer::PointerLocation,
-    platform::collections::{HashMap, HashSet},
-    prelude::*,
-    sprite::Text2dShadow,
-    window::PrimaryWindow,
+    ecs::system::SystemParam, math::bounding::BoundingVolume, picking::pointer::PointerLocation,
+    platform::collections::HashSet, prelude::*, sprite::Text2dShadow, window::PrimaryWindow,
 };
 
 use crate::{
-    coord_conversions::tile_to_aabb_world,
+    coord_conversions::tile_to_mercator_aabb,
     pancam::{MainCam, NewScale, SmoothZoom, pancam_plugin},
 };
-use tilemath::{BBox, Tile as TileMathTile, TileIterator, WEB_MERCATOR_EXTENT, bbox_covered_tiles};
+use tilemath::{Tile as TileMathTile, TileIterator};
 
 mod coord_conversions;
+mod local_origin;
 mod pancam;
-pub use coord_conversions::{MAP_SCALE, ToBBox, ToTileCoords, ViewportConv, WebMercatorConversion};
+pub use coord_conversions::{ToBBox, ToTileCoords, ViewportConv, WebMercatorConversion};
+pub use local_origin::{LocalOrigin, LocalSpace, MercatorAabb2d, MercatorCoords, TileBounds};
 
 pub const TILE_SIZE: f32 = 256.;
-pub const ZOOM_RANGE: RangeInclusive<u8> = 0..=20;
+pub const ZOOM_RANGE: RangeInclusive<u8> = 1..=20;
 
 // How many tiles to keep loaded
 const KEEP_UNUSED_TILES: usize = 1000;
 // increase this to make zoom levels "further away" for cleanup logic - closer tiles will be cleaned later
 const ZOOM_DISTANCE_FACTOR: u32 = 10;
+
+pub const MIN_ORTHO_SCALE: f32 = 0.1;
+
+fn zoom_to_scale(zoom: u8) -> f32 {
+    let clamped = zoom.clamp(*ZOOM_RANGE.start(), *ZOOM_RANGE.end()) as i32;
+    2.0f32.powf(24.5 - clamped as f32)
+}
+
+fn scale_to_zoom(scale: f32) -> u8 {
+    let zoom = (24.5 - scale.log2()).round() as i32;
+    zoom.clamp(*ZOOM_RANGE.start() as i32, *ZOOM_RANGE.end() as i32) as u8
+}
 pub struct MapPlugin {
     /// Initial zoom level of the map, between 1 and 19
     pub initial_zoom: u8,
@@ -49,39 +57,61 @@ impl Plugin for MapPlugin {
         let zoom = self
             .initial_zoom
             .clamp(*ZOOM_RANGE.start(), *ZOOM_RANGE.end());
-        let target_zoom = 0.5e-2; //2f32.powf(105.0 + zoom as f32 + 0.5); // formula from below, zoomed out a bit further
-        let translation = self
+        let target_scale = zoom_to_scale(zoom);
+        let initial_mercator = self
             .initial_center
             .as_dvec2()
-            .lonlat_to_world()
-            .extend(1.0)
-            .as_vec3();
-        app.add_plugins(pancam_plugin)
+            .lonlat_to_mercator()
+            .extend(1.0);
+        let origin = LocalOrigin::new(initial_mercator);
+        let camera_translation = origin.mercator_to_local_vec3(initial_mercator);
+
+        app.insert_resource(origin)
+            .add_plugins(pancam_plugin)
             .add_systems(
                 Startup,
                 (move |mut commands: Commands| {
                     commands
                         .spawn((
                             Camera2d,
-                            SmoothZoom::default(),
+                            SmoothZoom { target_scale },
                             MainCam,
-                            Transform::from_translation(translation)
-                                .with_scale(Vec3::splat(target_zoom)),
+                            LocalSpace,
+                            Transform::from_translation(camera_translation)
+                                .with_scale(Vec3::splat(0.01)),
                             Zoom(zoom),
                         ))
                         .with_related_entities::<ZoomOf>(|rel_c| {
                             for z in ZOOM_RANGE {
-                                rel_c.spawn((Zoom(z), Transform::default(), Visibility::Inherited));
+                                rel_c.spawn((
+                                    Zoom(z),
+                                    Transform::default(),
+                                    Visibility::Inherited,
+                                    LocalSpace,
+                                ));
                             }
                         });
                 },),
             )
-            .add_systems(Update, (debug_draw, spawn_new_tiles, despawn_old_tiles))
+            .add_systems(
+                Update,
+                (
+                    update_local_origin,
+                    debug_draw,
+                    spawn_new_tiles,
+                    despawn_old_tiles,
+                ),
+            )
+            .add_systems(
+                PostUpdate,
+                (sync_added_mercator_coords, sync_changed_mercator_coords),
+            )
             .init_resource::<ExistingTilesSet>()
             .add_observer(handle_zoom_level)
             .add_observer(tile_url_to_sprite)
             .add_observer(tile_inserted)
-            .add_observer(tile_replaced);
+            .add_observer(tile_replaced)
+            .add_observer(keep_display_size);
     }
 }
 
@@ -104,7 +134,8 @@ struct ZoomHelper<'w, 's, M: Component> {
 
 impl<'w, 's, M: Component> ZoomHelper<'w, 's, M> {
     fn level_entity(&self) -> Entity {
-        self.cam.1.iter().nth(self.cam.0.0 as usize).unwrap()
+        let index = (self.cam.0.0.saturating_sub(*ZOOM_RANGE.start())) as usize;
+        self.cam.1.iter().nth(index).unwrap()
     }
     fn level(&self) -> u8 {
         self.cam.0.0
@@ -122,25 +153,22 @@ fn handle_zoom_level(
 ) {
     let (mut zoom, levels) = cam.into_inner();
     // https://www.desmos.com/calculator/dkbfdjvcfx
-    let x: f32 = scale.event().0;
-
-    zoom.0 = 20; //((21.25 - x.log2()) as u8).clamp(*ZOOM_RANGE.start(), *ZOOM_RANGE.end());
-    dbg!(x, x.log2(), zoom.0);
-
+    let current_scale: f32 = scale.event().0;
+    zoom.0 = scale_to_zoom(current_scale);
     for e in levels.iter() {
         let (level, mut tr, mut vis) = zooms.get_mut(e).unwrap();
         if level.0 == zoom.0 {
             *vis = Visibility::Inherited;
-            tr.translation.z = 0.99;
+            tr.translation.z = -0.1;
         } else if level.0 == zoom.0.saturating_sub(1) {
             *vis = Visibility::Inherited;
-            tr.translation.z = 0.5;
+            tr.translation.z = -0.2;
         } else if level.0 == zoom.0.saturating_add(1) {
             *vis = Visibility::Inherited;
-            tr.translation.z = 0.2;
+            tr.translation.z = -0.5;
         } else {
             *vis = Visibility::Hidden;
-            tr.translation.z = 0.0;
+            tr.translation.z = -1.0;
         }
     }
     // qry: Query<(&Tile,)>, view: ViewportConv<MainCam>
@@ -179,31 +207,36 @@ fn tile_url_to_sprite(
     });
 }
 
-fn new_tile(tile: TileMathTile) -> impl Bundle {
+fn new_tile(tile: TileMathTile, origin: &LocalOrigin) -> impl Bundle {
     //let tile_coord_limit = (2 as u32).pow(tile.zoom as u32) - 1;
 
     let url = format!(
         "https://mapproxy.dmho.de/tms/1.0.0/thunderforest_transport/EPSG3857/{}/{}/{}.png",
-        tile.zoom - 1,
+        tile.zoom.saturating_sub(1),
         tile.x, // % (tile_coord_limit + 1),
         tile.y, //.clamp(0, tile_coord_limit)
     );
-    let bbox = tile_to_aabb_world(tile);
+    let mercator_bounds = tile_to_mercator_aabb(tile);
+    let mercator_center = mercator_bounds.center().extend(1.0);
+    let local_bounds = origin.mercator_aabb_to_local(mercator_bounds);
+    let translation = local_bounds.center().extend(1.0);
+    let scale = (local_bounds.half_size() * 2.0).extend(1.0);
 
     (
         TileUrl(url),
-        Transform::from_translation(bbox.center().extend(1.0))
-            .with_scale((bbox.half_size() * 2.).extend(1.0)),
+        LocalSpace,
+        MercatorCoords::from_vec(mercator_center),
+        Transform::from_translation(translation).with_scale(scale),
         Tile(tile),
-        children![(
-            Text2d::new(format!("{}/{}/{}", tile.zoom, tile.x, tile.y)),
-            Text2dShadow {
-                offset: Vec2::new(2.0, -2.0),
-                ..Default::default()
-            },
-            TextFont::from_font_size(100.0),
-            Transform::from_scale(Vec3::ONE / 1024.).with_translation(Vec3::Z),
-        )],
+        // children![(
+        //     Text2d::new(format!("{}/{}/{}", tile.zoom, tile.x, tile.y)),
+        //     Text2dShadow {
+        //         offset: Vec2::new(2.0, -2.0),
+        //         ..Default::default()
+        //     },
+        //     TextFont::from_font_size(100.0),
+        //     Transform::from_scale(Vec3::ONE / 1024.).with_translation(Vec3::Z),
+        // )],
     )
 }
 
@@ -229,26 +262,115 @@ fn tile_replaced(
     existing.0.remove(&tile.0);
 }
 
+fn sync_added_mercator_coords(
+    mut commands: Commands,
+    origin: Res<LocalOrigin>,
+    mut with_transform: Query<
+        (Entity, &MercatorCoords, &mut Transform),
+        (Added<MercatorCoords>, With<Transform>),
+    >,
+    added_without_transform: Query<
+        (Entity, &MercatorCoords),
+        (Added<MercatorCoords>, Without<Transform>),
+    >,
+) {
+    for (entity, coords, mut transform) in with_transform.iter_mut() {
+        transform.translation = origin.mercator_to_local_vec3(coords.as_dvec3());
+        commands.entity(entity).insert(LocalSpace);
+    }
+
+    for (entity, coords) in added_without_transform.iter() {
+        dbg!(entity, coords);
+        let translation = origin.mercator_to_local_vec3(coords.as_dvec3());
+        commands
+            .entity(entity)
+            .insert((LocalSpace, Transform::from_translation(translation)));
+    }
+}
+
+fn sync_changed_mercator_coords(
+    origin: Res<LocalOrigin>,
+    mut query: Query<(&MercatorCoords, &mut Transform), Changed<MercatorCoords>>,
+) {
+    for (coords, mut transform) in query.iter_mut() {
+        transform.translation = origin.mercator_to_local_vec3(coords.as_dvec3());
+    }
+}
+
+fn update_local_origin(
+    mut origin: ResMut<LocalOrigin>,
+    mut cam_query: Query<&mut Transform, With<MainCam>>,
+    mut locals_without_coords: Query<
+        &mut Transform,
+        (
+            With<LocalSpace>,
+            Without<MainCam>,
+            Without<Zoom>,
+            Without<MercatorCoords>,
+        ),
+    >,
+    mut locals_with_coords: Query<
+        (&MercatorCoords, &mut Transform),
+        (With<LocalSpace>, Without<MainCam>, Without<Zoom>),
+    >,
+) {
+    let camera_offset = cam_query
+        .single()
+        .expect("Main camera missing for local origin maintenance")
+        .translation
+        .truncate();
+
+    if (camera_offset.length() as f64) <= origin.recenter_distance() {
+        return;
+    }
+
+    let delta = Vec3::new(camera_offset.x, camera_offset.y, 0.0);
+    origin.shift_mercator_origin(delta.as_dvec3());
+
+    for mut cam in cam_query.iter_mut() {
+        cam.translation -= delta;
+    }
+
+    for (coords, mut transform) in locals_with_coords.iter_mut() {
+        transform.translation = origin.mercator_to_local_vec3(coords.as_dvec3());
+    }
+
+    for mut transform in locals_without_coords.iter_mut() {
+        transform.translation -= delta;
+    }
+}
+
+#[derive(Component, Debug)]
+pub struct KeepDisplaySize;
+
+fn keep_display_size(
+    scale: On<NewScale>,
+    mut query: Query<&mut Transform, (With<MercatorCoords>, With<KeepDisplaySize>)>,
+) {
+    let scale = scale.event().0 * 0.1;
+    for mut tr in query.iter_mut() {
+        tr.scale = Vec2::splat(scale).extend(1.0);
+    }
+}
+
 fn spawn_new_tiles(
     mut commands: Commands,
     zoom: ZoomHelper<MainCam>,
     view: ViewportConv<MainCam>,
     existing_tiles: Res<ExistingTilesSet>,
+    origin: Res<LocalOrigin>,
 ) -> Result<()> {
-    let bbox = view.visible_aabb()?.world_to_tile_coords(zoom.level());
-    //dbg!(bbox);
-    let current_view_tiles = TileIterator::new(
-        zoom.level(),
-        (bbox.min.x as u32)..=(bbox.max.x as u32),
-        (bbox.min.y as u32)..=(bbox.max.y as u32),
-    )
-    .collect::<HashSet<_>>();
+    let bbox = view.visible_mercator_aabb()?;
+    let tile_bounds = bbox.mercator_to_tile_coords(zoom.level());
+    let current_view_tiles =
+        TileIterator::new(zoom.level(), tile_bounds.x_range(), tile_bounds.y_range())
+            .collect::<HashSet<_>>();
     let diff = current_view_tiles.difference(&existing_tiles.0);
     //dbg!(current_view_tiles.len());
     for tile in diff {
         commands
             .entity(zoom.level_entity())
-            .with_child(new_tile(*tile));
+            .with_child(new_tile(*tile, &origin));
     }
     Ok(())
 }
@@ -265,9 +387,9 @@ fn despawn_old_tiles(
     }
     let mut tiles = tiles.collect::<Vec<_>>();
     let center = view
-        .viewport_center_world()
+        .viewport_center_mercator()
         .unwrap()
-        .world_to_tile_coords(zoom.level());
+        .mercator_to_tile_coords(zoom.level());
     let me = center.extend(zoom.level() as u32 * ZOOM_DISTANCE_FACTOR);
     // manhattan distance is cheap and good enough. maybe even better for this than euclidian
     tiles.sort_unstable_by_key(|(_, a, _)| {
@@ -289,6 +411,7 @@ pub fn debug_draw(
     primary_window: Query<Entity, With<PrimaryWindow>>,
     pointers: Query<(Entity, &PointerLocation)>,
     scale: Res<UiScale>,
+    origin: Res<LocalOrigin>,
 ) {
     for (entity, location) in &pointers {
         let Some(pointer_location) = &location.location() else {
@@ -312,10 +435,10 @@ pub fn debug_draw(
             let Ok(pos) = camera.viewport_to_world_2d(cam_global_transform, pointer_pos) else {
                 continue;
             };
-            let mercator_pos = pos.world_to_mercator();
+            let mercator_pos = origin.local_to_mercator_vec2(pos);
             let coords = mercator_pos.mercator_to_lonlat();
             let text = format!(
-                "Lat: {}, Lon: {},\n web x: {}, web y: {},\n bevy x: {}, bevy y: {}",
+                "Lat: {}, Lon: {},\n mercator x: {}, mercator y: {},\n local x: {}, local y: {}",
                 coords.y, coords.x, mercator_pos.x, mercator_pos.y, pos.x, pos.y
             );
 
