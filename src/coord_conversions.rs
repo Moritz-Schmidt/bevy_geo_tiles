@@ -12,6 +12,7 @@ use miniproj_ops::popvis_pseudo_mercator::PopVisPseudoMercatorProjection;
 use tilemath::{BBox, Tile as TileMathTile};
 
 const WEB_MERCATOR_EXTENT: f64 = 20037508.342789244;
+pub const MAP_SCALE: f32 = 1.0;
 
 // Inlined miniproj::get_projection(3857).unwrap()
 const WEB_MERCATOR: PopVisPseudoMercatorProjection = PopVisPseudoMercatorProjection {
@@ -38,11 +39,13 @@ impl<'w, 's, MainCamMarker: Component> ViewportConv<'w, 's, MainCamMarker> {
     }
 
     pub fn viewport_to_latlon(&self, viewport_pos: Vec2) -> Result<Vec2> {
-        Ok(self.viewport_to_world_2d(viewport_pos)?.world_to_lonlat())
+        Ok(self
+            .viewport_to_world_2d(viewport_pos)?
+            .mercator_to_lonlat())
     }
 
     pub fn latlon_to_viewport(&self, latlon: Vec2) -> Result<Vec2> {
-        self.world_to_viewport(latlon.extend(0.0).lonlat_to_world())
+        self.world_to_viewport(latlon.extend(0.0).mercator_to_world())
     }
 
     pub fn visible_aabb(&self) -> Result<Aabb2d> {
@@ -65,34 +68,74 @@ impl<'w, 's, MainCamMarker: Component> ViewportConv<'w, 's, MainCamMarker> {
 }
 
 pub trait WebMercatorConversion {
-    fn world_to_lonlat(&self) -> Self;
-
+    fn mercator_to_lonlat(&self) -> Self;
+    fn lonlat_to_mercator(&self) -> Self;
+    fn mercator_to_world(&self) -> Self;
+    fn world_to_mercator(&self) -> Self;
     fn lonlat_to_world(&self) -> Self;
 }
 
 impl WebMercatorConversion for DVec2 {
-    fn world_to_lonlat(&self) -> Self {
+    fn mercator_to_lonlat(&self) -> Self {
         DVec2::from(WEB_MERCATOR.projected_to_deg(self.x, self.y))
     }
 
-    fn lonlat_to_world(&self) -> Self {
+    fn lonlat_to_mercator(&self) -> Self {
         DVec2::from(WEB_MERCATOR.deg_to_projected(self.x, self.y))
+    }
+
+    fn mercator_to_world(&self) -> Self {
+        self * MAP_SCALE as f64
+    }
+
+    fn world_to_mercator(&self) -> Self {
+        self / MAP_SCALE as f64
+    }
+
+    fn lonlat_to_world(&self) -> Self {
+        self.lonlat_to_mercator().mercator_to_world()
     }
 }
 
 impl WebMercatorConversion for Vec2 {
-    fn world_to_lonlat(&self) -> Self {
-        self.as_dvec2().world_to_lonlat().as_vec2()
+    fn mercator_to_lonlat(&self) -> Self {
+        self.as_dvec2().mercator_to_lonlat().as_vec2()
+    }
+
+    fn lonlat_to_mercator(&self) -> Self {
+        self.as_dvec2().lonlat_to_mercator().as_vec2()
+    }
+
+    fn mercator_to_world(&self) -> Self {
+        self * MAP_SCALE
+    }
+
+    fn world_to_mercator(&self) -> Self {
+        self / MAP_SCALE
     }
 
     fn lonlat_to_world(&self) -> Self {
-        self.as_dvec2().lonlat_to_world().as_vec2()
+        self.as_dvec2()
+            .lonlat_to_mercator()
+            .mercator_to_world()
+            .as_vec2()
     }
 }
 
 impl WebMercatorConversion for Vec3 {
-    fn world_to_lonlat(&self) -> Self {
-        self.truncate().world_to_lonlat().extend(self.z)
+    fn mercator_to_lonlat(&self) -> Self {
+        self.truncate().mercator_to_lonlat().extend(self.z)
+    }
+
+    fn lonlat_to_mercator(&self) -> Self {
+        self.truncate().lonlat_to_mercator().extend(self.z)
+    }
+    fn mercator_to_world(&self) -> Self {
+        self.truncate().mercator_to_world().extend(self.z)
+    }
+
+    fn world_to_mercator(&self) -> Self {
+        self.truncate().world_to_mercator().extend(self.z)
     }
 
     fn lonlat_to_world(&self) -> Self {
@@ -100,8 +143,20 @@ impl WebMercatorConversion for Vec3 {
     }
 }
 impl WebMercatorConversion for DVec3 {
-    fn world_to_lonlat(&self) -> Self {
-        self.truncate().world_to_lonlat().extend(self.z)
+    fn mercator_to_lonlat(&self) -> Self {
+        self.truncate().mercator_to_lonlat().extend(self.z)
+    }
+
+    fn lonlat_to_mercator(&self) -> Self {
+        self.truncate().lonlat_to_mercator().extend(self.z)
+    }
+
+    fn mercator_to_world(&self) -> Self {
+        self.truncate().mercator_to_world().extend(self.z)
+    }
+
+    fn world_to_mercator(&self) -> Self {
+        self.truncate().world_to_mercator().extend(self.z)
     }
 
     fn lonlat_to_world(&self) -> Self {
@@ -110,12 +165,33 @@ impl WebMercatorConversion for DVec3 {
 }
 
 impl WebMercatorConversion for Aabb2d {
-    fn world_to_lonlat(&self) -> Self {
+    fn mercator_to_lonlat(&self) -> Self {
         Aabb2d {
-            max: self.max.world_to_lonlat(),
-            min: self.min.world_to_lonlat(),
+            max: self.max.mercator_to_lonlat(),
+            min: self.min.mercator_to_lonlat(),
         }
     }
+    fn lonlat_to_mercator(&self) -> Self {
+        Aabb2d {
+            max: self.max.lonlat_to_mercator(),
+            min: self.min.lonlat_to_mercator(),
+        }
+    }
+
+    fn mercator_to_world(&self) -> Self {
+        Aabb2d {
+            max: self.max.mercator_to_world(),
+            min: self.min.mercator_to_world(),
+        }
+    }
+
+    fn world_to_mercator(&self) -> Self {
+        Aabb2d {
+            max: self.max.world_to_mercator(),
+            min: self.min.world_to_mercator(),
+        }
+    }
+
     fn lonlat_to_world(&self) -> Self {
         Aabb2d {
             max: self.max.lonlat_to_world(),
@@ -126,13 +202,13 @@ impl WebMercatorConversion for Aabb2d {
 
 pub trait ToBBox {
     fn lonlat_to_bbox(&self) -> BBox;
-    fn world_to_bbox(&self) -> BBox;
+    fn mercator_to_bbox(&self) -> BBox;
 }
 impl ToBBox for Aabb2d {
     fn lonlat_to_bbox(&self) -> BBox {
-        self.lonlat_to_world().world_to_bbox()
+        self.lonlat_to_mercator().mercator_to_bbox()
     }
-    fn world_to_bbox(&self) -> BBox {
+    fn mercator_to_bbox(&self) -> BBox {
         BBox {
             min_x: self.min.x as f64,
             min_y: self.min.y as f64,
@@ -144,12 +220,14 @@ impl ToBBox for Aabb2d {
 
 pub trait ToTileCoords {
     type Output;
-    fn world_to_tile_coords(&self, zoom: u8) -> Self::Output;
+    fn mercator_to_tile_coords(&self, zoom: u8) -> Self::Output;
     fn lonlat_to_tile_coords(&self, zoom: u8) -> Self::Output;
+    fn world_to_tile_coords(&self, zoom: u8) -> Self::Output;
 }
 impl ToTileCoords for DVec2 {
     type Output = UVec2;
-    fn world_to_tile_coords(&self, zoom: u8) -> Self::Output {
+
+    fn mercator_to_tile_coords(&self, zoom: u8) -> Self::Output {
         let scale = (1 << zoom) as f64;
         let limit = 2u32.pow(zoom as u32) - 1;
 
@@ -159,12 +237,20 @@ impl ToTileCoords for DVec2 {
     }
 
     fn lonlat_to_tile_coords(&self, zoom: u8) -> Self::Output {
-        self.lonlat_to_world().world_to_tile_coords(zoom)
+        self.lonlat_to_mercator().mercator_to_tile_coords(zoom)
+    }
+
+    fn world_to_tile_coords(&self, zoom: u8) -> Self::Output {
+        self.world_to_mercator().mercator_to_tile_coords(zoom)
     }
 }
 
 impl ToTileCoords for Vec2 {
     type Output = UVec2;
+    fn mercator_to_tile_coords(&self, zoom: u8) -> Self::Output {
+        self.as_dvec2().mercator_to_tile_coords(zoom)
+    }
+
     fn world_to_tile_coords(&self, zoom: u8) -> Self::Output {
         self.as_dvec2().world_to_tile_coords(zoom)
     }
@@ -176,7 +262,25 @@ impl ToTileCoords for Vec2 {
 
 impl ToTileCoords for Aabb2d {
     type Output = Self;
+
     fn world_to_tile_coords(&self, zoom: u8) -> Self {
+        let max = self.max.as_dvec2().world_to_mercator();
+        let min = self.min.as_dvec2().world_to_mercator();
+        let scale = (1 << zoom) as f64;
+        let limit = 2u32.pow(zoom as u32) - 1;
+        let norm_max = (max + WEB_MERCATOR_EXTENT) / (2.0 * WEB_MERCATOR_EXTENT);
+        let tile_max = norm_max * scale;
+        let max_coords = (tile_max.ceil() - 1.0)
+            .max(DVec2::ZERO)
+            .as_uvec2()
+            .min(UVec2::splat(limit));
+        Aabb2d {
+            min: min.mercator_to_tile_coords(zoom).as_vec2(),
+            max: max_coords.as_vec2(),
+        }
+    }
+
+    fn mercator_to_tile_coords(&self, zoom: u8) -> Self {
         let scale = (1 << zoom) as f64;
         let limit = 2u32.pow(zoom as u32) - 1;
         let norm_max = (self.max.as_dvec2() + WEB_MERCATOR_EXTENT) / (2.0 * WEB_MERCATOR_EXTENT);
@@ -186,17 +290,17 @@ impl ToTileCoords for Aabb2d {
             .as_uvec2()
             .min(UVec2::splat(limit));
         Aabb2d {
-            min: self.min.world_to_tile_coords(zoom).as_vec2(),
+            min: self.min.mercator_to_tile_coords(zoom).as_vec2(),
             max: max_coords.as_vec2(),
         }
     }
 
     fn lonlat_to_tile_coords(&self, zoom: u8) -> Self {
-        self.lonlat_to_world().world_to_tile_coords(zoom)
+        self.lonlat_to_mercator().mercator_to_tile_coords(zoom)
     }
 }
 
-pub fn tile_to_aabb(tile: TileMathTile) -> Aabb2d {
+pub fn tile_to_aabb_world(tile: TileMathTile) -> Aabb2d {
     let tile_size = (2.0 * WEB_MERCATOR_EXTENT) / (1u32 << tile.zoom) as f64;
 
     Aabb2d {
@@ -204,11 +308,13 @@ pub fn tile_to_aabb(tile: TileMathTile) -> Aabb2d {
             tile.x as f64 * tile_size - WEB_MERCATOR_EXTENT,
             -WEB_MERCATOR_EXTENT + tile.y as f64 * tile_size,
         )
+        .mercator_to_world()
         .as_vec2(),
         max: DVec2::new(
             (tile.x + 1) as f64 * tile_size - WEB_MERCATOR_EXTENT,
             -WEB_MERCATOR_EXTENT + (tile.y as f64 + 1.) * tile_size,
         )
+        .mercator_to_world()
         .as_vec2(),
     }
 }

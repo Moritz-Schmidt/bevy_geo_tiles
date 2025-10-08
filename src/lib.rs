@@ -12,17 +12,17 @@ use bevy::{
 };
 
 use crate::{
-    coord_conversions::tile_to_aabb,
+    coord_conversions::tile_to_aabb_world,
     pancam::{MainCam, NewScale, SmoothZoom, pancam_plugin},
 };
 use tilemath::{BBox, Tile as TileMathTile, TileIterator, WEB_MERCATOR_EXTENT, bbox_covered_tiles};
 
 mod coord_conversions;
 mod pancam;
-pub use coord_conversions::{ToBBox, ToTileCoords, ViewportConv, WebMercatorConversion};
+pub use coord_conversions::{MAP_SCALE, ToBBox, ToTileCoords, ViewportConv, WebMercatorConversion};
 
 pub const TILE_SIZE: f32 = 256.;
-pub const ZOOM_RANGE: RangeInclusive<u8> = 0..=17;
+pub const ZOOM_RANGE: RangeInclusive<u8> = 0..=20;
 
 // How many tiles to keep loaded
 const KEEP_UNUSED_TILES: usize = 1000;
@@ -49,8 +49,13 @@ impl Plugin for MapPlugin {
         let zoom = self
             .initial_zoom
             .clamp(*ZOOM_RANGE.start(), *ZOOM_RANGE.end());
-        let target_zoom = 2f32.powf(17.25 - zoom as f32 + 0.5); // formula from below, zoomed out a bit further
-        let translation = self.initial_center.lonlat_to_world().extend(1.0);
+        let target_zoom = 0.5e-2; //2f32.powf(105.0 + zoom as f32 + 0.5); // formula from below, zoomed out a bit further
+        let translation = self
+            .initial_center
+            .as_dvec2()
+            .lonlat_to_world()
+            .extend(1.0)
+            .as_vec3();
         app.add_plugins(pancam_plugin)
             .add_systems(
                 Startup,
@@ -118,7 +123,9 @@ fn handle_zoom_level(
     let (mut zoom, levels) = cam.into_inner();
     // https://www.desmos.com/calculator/dkbfdjvcfx
     let x: f32 = scale.event().0;
-    zoom.0 = ((15.25 - x.log2()) as u8).clamp(*ZOOM_RANGE.start(), *ZOOM_RANGE.end());
+
+    zoom.0 = 20; //((21.25 - x.log2()) as u8).clamp(*ZOOM_RANGE.start(), *ZOOM_RANGE.end());
+    dbg!(x, x.log2(), zoom.0);
 
     for e in levels.iter() {
         let (level, mut tr, mut vis) = zooms.get_mut(e).unwrap();
@@ -181,7 +188,7 @@ fn new_tile(tile: TileMathTile) -> impl Bundle {
         tile.x, // % (tile_coord_limit + 1),
         tile.y, //.clamp(0, tile_coord_limit)
     );
-    let bbox = tile_to_aabb(tile);
+    let bbox = tile_to_aabb_world(tile);
 
     (
         TileUrl(url),
@@ -229,6 +236,7 @@ fn spawn_new_tiles(
     existing_tiles: Res<ExistingTilesSet>,
 ) -> Result<()> {
     let bbox = view.visible_aabb()?.world_to_tile_coords(zoom.level());
+    //dbg!(bbox);
     let current_view_tiles = TileIterator::new(
         zoom.level(),
         (bbox.min.x as u32)..=(bbox.max.x as u32),
@@ -236,6 +244,7 @@ fn spawn_new_tiles(
     )
     .collect::<HashSet<_>>();
     let diff = current_view_tiles.difference(&existing_tiles.0);
+    //dbg!(current_view_tiles.len());
     for tile in diff {
         commands
             .entity(zoom.level_entity())
@@ -303,11 +312,11 @@ pub fn debug_draw(
             let Ok(pos) = camera.viewport_to_world_2d(cam_global_transform, pointer_pos) else {
                 continue;
             };
-
-            let coords = pos.world_to_lonlat();
+            let mercator_pos = pos.world_to_mercator();
+            let coords = mercator_pos.mercator_to_lonlat();
             let text = format!(
-                "Lat: {}, Lon: {}, web x: {}, web y: {}",
-                coords.y, coords.x, pos.x, pos.y
+                "Lat: {}, Lon: {},\n web x: {}, web y: {},\n bevy x: {}, bevy y: {}",
+                coords.y, coords.x, mercator_pos.x, mercator_pos.y, pos.x, pos.y
             );
 
             commands
