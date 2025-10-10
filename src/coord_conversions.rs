@@ -8,6 +8,7 @@ use miniproj_ops::popvis_pseudo_mercator::PopVisPseudoMercatorProjection;
 use tilemath::{BBox, Tile as TileMathTile};
 
 use crate::local_origin::{LocalOrigin, MercatorAabb2d, TileBounds};
+use crate::local_origin_conversions::LocalOriginConversion;
 
 const WEB_MERCATOR_EXTENT: f64 = 20037508.342789244;
 
@@ -30,11 +31,11 @@ impl<'w, 's, MainCamMarker: Component> ViewportConv<'w, 's, MainCamMarker> {
             .camera
             .0
             .viewport_to_world_2d(self.camera.1, viewport_pos)?;
-        Ok(self.origin.local_to_mercator_vec2(local))
+        Ok(local.local_to_mercator(&self.origin))
     }
 
     pub fn mercator_to_viewport(&self, mercator_pos: DVec3) -> Result<Vec2> {
-        let local = self.origin.mercator_to_local_vec3(mercator_pos);
+        let local = mercator_pos.mercator_to_local(&self.origin).as_vec3();
         Ok(self.camera.0.world_to_viewport(self.camera.1, local)?)
     }
 
@@ -62,7 +63,7 @@ impl<'w, 's, MainCamMarker: Component> ViewportConv<'w, 's, MainCamMarker> {
                         .viewport_to_world_2d(self.camera.1, viewport.min)?,
                 ],
             );
-            Ok(self.origin.local_aabb_to_mercator(&local_bounds))
+            Ok(local_bounds.local_to_mercator(&self.origin))
         } else {
             todo!()
         }
@@ -74,65 +75,57 @@ impl<'w, 's, MainCamMarker: Component> ViewportConv<'w, 's, MainCamMarker> {
 }
 
 pub trait WebMercatorConversion {
+    type Output;
     fn mercator_to_lonlat(&self) -> Self;
-    fn lonlat_to_mercator(&self) -> Self;
+    fn lonlat_to_mercator(&self) -> Self::Output;
 }
 
 impl WebMercatorConversion for DVec2 {
+    type Output = Self;
     fn mercator_to_lonlat(&self) -> Self {
         DVec2::from(WEB_MERCATOR.projected_to_deg(self.x, self.y))
     }
 
-    fn lonlat_to_mercator(&self) -> Self {
+    fn lonlat_to_mercator(&self) -> Self::Output {
         DVec2::from(WEB_MERCATOR.deg_to_projected(self.x, self.y))
     }
 }
 
 impl WebMercatorConversion for Vec2 {
+    type Output = DVec2;
     fn mercator_to_lonlat(&self) -> Self {
         self.as_dvec2().mercator_to_lonlat().as_vec2()
     }
 
-    fn lonlat_to_mercator(&self) -> Self {
-        self.as_dvec2().lonlat_to_mercator().as_vec2()
+    fn lonlat_to_mercator(&self) -> Self::Output {
+        self.as_dvec2().lonlat_to_mercator()
     }
 }
 
 impl WebMercatorConversion for Vec3 {
+    type Output = DVec3;
     fn mercator_to_lonlat(&self) -> Self {
         self.truncate().mercator_to_lonlat().extend(self.z)
     }
 
-    fn lonlat_to_mercator(&self) -> Self {
-        self.truncate().lonlat_to_mercator().extend(self.z)
+    fn lonlat_to_mercator(&self) -> Self::Output {
+        self.truncate().lonlat_to_mercator().extend(self.z as f64)
     }
 }
+
 impl WebMercatorConversion for DVec3 {
+    type Output = Self;
     fn mercator_to_lonlat(&self) -> Self {
         self.truncate().mercator_to_lonlat().extend(self.z)
     }
 
-    fn lonlat_to_mercator(&self) -> Self {
+    fn lonlat_to_mercator(&self) -> Self::Output {
         self.truncate().lonlat_to_mercator().extend(self.z)
-    }
-}
-
-impl WebMercatorConversion for Aabb2d {
-    fn mercator_to_lonlat(&self) -> Self {
-        Aabb2d {
-            max: self.max.mercator_to_lonlat(),
-            min: self.min.mercator_to_lonlat(),
-        }
-    }
-    fn lonlat_to_mercator(&self) -> Self {
-        Aabb2d {
-            max: self.max.lonlat_to_mercator(),
-            min: self.min.lonlat_to_mercator(),
-        }
     }
 }
 
 impl WebMercatorConversion for MercatorAabb2d {
+    type Output = Self;
     fn mercator_to_lonlat(&self) -> Self {
         MercatorAabb2d {
             max: self.max.mercator_to_lonlat(),
@@ -151,19 +144,6 @@ impl WebMercatorConversion for MercatorAabb2d {
 pub trait ToBBox {
     fn lonlat_to_bbox(&self) -> BBox;
     fn mercator_to_bbox(&self) -> BBox;
-}
-impl ToBBox for Aabb2d {
-    fn lonlat_to_bbox(&self) -> BBox {
-        self.lonlat_to_mercator().mercator_to_bbox()
-    }
-    fn mercator_to_bbox(&self) -> BBox {
-        BBox {
-            min_x: self.min.x as f64,
-            min_y: self.min.y as f64,
-            max_x: self.max.x as f64,
-            max_y: self.max.y as f64,
-        }
-    }
 }
 
 impl ToBBox for MercatorAabb2d {

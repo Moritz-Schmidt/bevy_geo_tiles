@@ -1,7 +1,8 @@
 use bevy::dev_tools::fps_overlay::FpsOverlayPlugin;
+use bevy::mesh::Polyline2dMeshBuilder;
 use bevy::sprite;
 use bevy::{log::LogPlugin, prelude::*};
-use bevy_geo_tiles::{KeepDisplaySize, MapPlugin, MercatorCoords};
+use bevy_geo_tiles::{KeepDisplaySize, MapPlugin, MercatorCoords, Tile};
 
 fn main() {
     App::new()
@@ -22,10 +23,15 @@ fn main() {
         )
         .add_plugins(FpsOverlayPlugin::default())
         .add_plugins(MapPlugin {
-            initial_zoom: 20,
+            initial_zoom: 10,
             initial_center: (13.4064, 52.51977).into(),
+            tile_source: "https://tile.openstreetmap.org/{z}/{x}/{y}.png".to_string(),
+            reverse_y: false,
+            zoom_offset: 0,
+            ..Default::default()
         })
         .add_systems(Startup, create_marker)
+        
         .run();
 }
 

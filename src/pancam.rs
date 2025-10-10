@@ -7,6 +7,7 @@ pub(crate) fn pancam_plugin(app: &mut App) {
         .add_systems(Update, (pinch_zoom, zoom_smooth).chain());
 }
 
+/// Marker component for the main camera
 #[derive(Component, Debug)]
 pub struct MainCam;
 
