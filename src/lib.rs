@@ -57,6 +57,7 @@
 //!   tracks the current offset between the two and recenters automatically when the camera drifts too far from the origin.
 //!
 //! See [`MapPlugin`] for configuration options, including tile server customization and cache settings.
+#![allow(clippy::type_complexity)]
 
 use std::{ops::RangeInclusive, path::PathBuf};
 
@@ -68,6 +69,7 @@ use bevy::{
 use crate::{
     coord_conversions::tile_to_mercator_aabb,
     pancam::{MainCam, NewScale, SmoothZoom, pancam_plugin},
+    shapes::shapes_plugin,
     tile_fetcher::{
         TileFetcher, apply_tile_fetch_results, default_cache_dir, queue_tile_downloads,
     },
@@ -78,6 +80,7 @@ mod coord_conversions;
 mod local_origin;
 mod local_origin_conversions;
 mod pancam;
+pub mod shapes;
 mod tile_fetcher;
 pub use coord_conversions::{ToBBox, ToTileCoords, ViewportConv, WebMercatorConversion};
 pub use local_origin::{LocalOrigin, LocalSpace, MercatorAabb2d, MercatorCoords};
@@ -168,6 +171,7 @@ impl Plugin for MapPlugin {
         .init_resource::<TileFetcher>()
         .insert_resource(origin)
         .add_plugins(pancam_plugin)
+        .add_plugins(shapes_plugin)
         .add_systems(
             Startup,
             (move |mut commands: Commands| {
@@ -215,7 +219,8 @@ impl Plugin for MapPlugin {
         .add_observer(handle_zoom_level)
         .add_observer(tile_inserted)
         .add_observer(tile_replaced)
-        .add_observer(keep_display_size);
+        .add_observer(keep_display_size)
+        .add_observer(update_locals_with_coords_on_origin_change);
     }
 }
 
@@ -264,16 +269,16 @@ fn handle_zoom_level(
         let (level, mut tr, mut vis) = zooms.get_mut(e).unwrap();
         if level.0 == zoom.0 {
             *vis = Visibility::Inherited;
-            tr.translation.z = -0.1;
+            tr.translation.z = -1.0;
         } else if level.0 == zoom.0.saturating_sub(1) {
             *vis = Visibility::Inherited;
-            tr.translation.z = -0.2;
+            tr.translation.z = -1.2;
         } else if level.0 == zoom.0.saturating_add(1) {
             *vis = Visibility::Inherited;
-            tr.translation.z = -0.5;
+            tr.translation.z = -1.5;
         } else {
             *vis = Visibility::Hidden;
-            tr.translation.z = -1.0;
+            tr.translation.z = -2.0;
         }
     }
     // qry: Query<(&Tile,)>, view: ViewportConv<MainCam>
@@ -292,9 +297,9 @@ fn new_tile(tile: TileMathTile, origin: &LocalOrigin) -> impl Bundle {
     //let tile_coord_limit = (2 as u32).pow(tile.zoom as u32) - 1;
 
     let mercator_bounds = tile_to_mercator_aabb(tile);
-    let mercator_center = mercator_bounds.center().extend(1.0);
+    let mercator_center = mercator_bounds.center().extend(-1.0);
     let local_bounds = mercator_bounds.mercator_to_local(origin);
-    let translation = local_bounds.center().extend(1.0);
+    let translation = local_bounds.center().extend(-1.0);
     let scale = (local_bounds.half_size() * 2.0).extend(1.0);
 
     (
@@ -330,6 +335,7 @@ fn tile_inserted(
     let tile = query.get(insert.entity).unwrap();
     existing.0.insert(tile.0);
 }
+
 fn tile_replaced(
     replace: On<Replace, Tile>,
     query: Query<&Tile>,
@@ -375,22 +381,13 @@ fn sync_changed_mercator_coords(
     }
 }
 
+#[derive(Event, Debug, Clone)]
+struct LocalOriginUpdated(Vec3);
+
 fn update_local_origin(
+    mut commands: Commands,
     mut origin: ResMut<LocalOrigin>,
     mut cam_query: Query<&mut Transform, With<MainCam>>,
-    mut locals_without_coords: Query<
-        &mut Transform,
-        (
-            With<LocalSpace>,
-            Without<MainCam>,
-            Without<Zoom>,
-            Without<MercatorCoords>,
-        ),
-    >,
-    mut locals_with_coords: Query<
-        (&MercatorCoords, &mut Transform),
-        (With<LocalSpace>, Without<MainCam>, Without<Zoom>),
-    >,
 ) {
     let camera_offset = cam_query
         .single()
@@ -409,16 +406,25 @@ fn update_local_origin(
         cam.translation -= delta;
     }
 
-    for (coords, mut transform) in locals_with_coords.iter_mut() {
-        transform.translation = coords.0.mercator_to_local(&origin).as_vec3();
-    }
+    commands.trigger(LocalOriginUpdated(delta));
+}
 
-    for mut transform in locals_without_coords.iter_mut() {
+fn update_locals_with_coords_on_origin_change(
+    event: On<LocalOriginUpdated>,
+    mut locals_with_coords: Query<
+        &mut Transform,
+        (With<LocalSpace>, Without<MainCam>, Without<Zoom>),
+    >,
+) {
+    let delta = event.event().0;
+    for mut transform in locals_with_coords.iter_mut() {
         transform.translation -= delta;
     }
 }
 
 /// Marker component to keep the display size of an entity constant when zooming in/out
+///
+/// Changes the scale of the transform based on the zoom level
 #[derive(Component, Debug)]
 pub struct KeepDisplaySize;
 

@@ -78,6 +78,7 @@ pub trait WebMercatorConversion {
     type Output;
     fn mercator_to_lonlat(&self) -> Self;
     fn lonlat_to_mercator(&self) -> Self::Output;
+    fn latlon_to_mercator(&self) -> Self::Output;
 }
 
 impl WebMercatorConversion for DVec2 {
@@ -88,6 +89,10 @@ impl WebMercatorConversion for DVec2 {
 
     fn lonlat_to_mercator(&self) -> Self::Output {
         DVec2::from(WEB_MERCATOR.deg_to_projected(self.x, self.y))
+    }
+
+    fn latlon_to_mercator(&self) -> Self::Output {
+        self.yx().lonlat_to_mercator()
     }
 }
 
@@ -100,6 +105,10 @@ impl WebMercatorConversion for Vec2 {
     fn lonlat_to_mercator(&self) -> Self::Output {
         self.as_dvec2().lonlat_to_mercator()
     }
+
+    fn latlon_to_mercator(&self) -> Self::Output {
+        self.as_dvec2().latlon_to_mercator()
+    }
 }
 
 impl WebMercatorConversion for Vec3 {
@@ -111,6 +120,10 @@ impl WebMercatorConversion for Vec3 {
     fn lonlat_to_mercator(&self) -> Self::Output {
         self.truncate().lonlat_to_mercator().extend(self.z as f64)
     }
+
+    fn latlon_to_mercator(&self) -> Self::Output {
+        self.truncate().latlon_to_mercator().extend(self.z as f64)
+    }
 }
 
 impl WebMercatorConversion for DVec3 {
@@ -121,6 +134,10 @@ impl WebMercatorConversion for DVec3 {
 
     fn lonlat_to_mercator(&self) -> Self::Output {
         self.truncate().lonlat_to_mercator().extend(self.z)
+    }
+
+    fn latlon_to_mercator(&self) -> Self::Output {
+        self.truncate().latlon_to_mercator().extend(self.z)
     }
 }
 
@@ -137,6 +154,13 @@ impl WebMercatorConversion for MercatorAabb2d {
         MercatorAabb2d {
             max: self.max.lonlat_to_mercator(),
             min: self.min.lonlat_to_mercator(),
+        }
+    }
+
+    fn latlon_to_mercator(&self) -> Self {
+        MercatorAabb2d {
+            max: self.max.latlon_to_mercator(),
+            min: self.min.latlon_to_mercator(),
         }
     }
 }
@@ -233,4 +257,43 @@ pub fn tile_to_mercator_aabb(tile: TileMathTile) -> MercatorAabb2d {
     );
 
     MercatorAabb2d { min, max }
+}
+
+impl<T> WebMercatorConversion for Vec<T>
+where
+    T: WebMercatorConversion<Output = T> + Copy,
+{
+    type Output = Vec<T>;
+    fn mercator_to_lonlat(&self) -> Self {
+        self.iter().map(|p| p.mercator_to_lonlat()).collect()
+    }
+
+    fn lonlat_to_mercator(&self) -> Self::Output {
+        self.iter().map(|p| p.lonlat_to_mercator()).collect()
+    }
+
+    fn latlon_to_mercator(&self) -> Self::Output {
+        self.iter().map(|p| p.latlon_to_mercator()).collect()
+    }
+}
+
+impl WebMercatorConversion for Vec<(f64, f64)> {
+    type Output = Vec<DVec2>;
+    fn mercator_to_lonlat(&self) -> Self {
+        self.iter()
+            .map(|p| DVec2::from(*p).mercator_to_lonlat().into())
+            .collect()
+    }
+
+    fn lonlat_to_mercator(&self) -> Self::Output {
+        self.iter()
+            .map(|p| DVec2::from(*p).lonlat_to_mercator())
+            .collect()
+    }
+
+    fn latlon_to_mercator(&self) -> Self::Output {
+        self.iter()
+            .map(|p| DVec2::from(*p).latlon_to_mercator())
+            .collect()
+    }
 }
