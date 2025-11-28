@@ -5,16 +5,8 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "Bevy plugin for displaying slippy-map tiles like OpenStreetMap raster tiles."
 repository = "https://github.com/Moritz-Schmidt/bevy_geo_tiles"
-keywords = [
-    "bevy",
-    "geo",
-    "geospatial",
-    "gis",
-    "geography",
-    "osm",
-    "openstreetmap",
-]
-categories = ["geospatial"]
+keywords = ["bevy", "gis", "geography", "osm", "openstreetmap"]
+categories = ["science::geo"]
 authors = ["Moritz Schmidt <rust@moritz-a-schmidt.de>"]
 readme = "README.md"
 
