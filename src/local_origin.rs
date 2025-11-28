@@ -5,6 +5,8 @@ use bevy::{
 
 use crate::WebMercatorConversion;
 
+pub(crate) const DEFAULT_RECENTER_DISTANCE: f64 = 25_000.0;
+
 /// Marker component for entities in local space (relative to the `LocalOrigin`).
 #[derive(Component, Clone, Copy, Debug, Default)]
 pub struct LocalSpace;
@@ -12,15 +14,10 @@ pub struct LocalSpace;
 /// Web mercator coordinates (EPSG:3857) stored in a DVec3 (x, y, z).
 ///
 /// The z coordinate is not used for coordinate conversions but can be used to create layers (i.e. displaying things above other things)
-/// Entities with this component automatically get a `Transform` component with the local coordinates relative to the `LocalOrigin`.
+/// Entities with this component automatically get a [Transform] component with the local coordinates relative to the `LocalOrigin`.
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
 pub struct MercatorCoords(pub DVec3);
 
-/// Geographic position stored in Web Mercator meters.
-///
-/// The [`MapPlugin`](crate::MapPlugin) keeps the entity's [`Transform`] synchronized with the
-/// moving local origin, so you can update the mercator coordinates independently of the
-/// current camera position.
 impl MercatorCoords {
     pub fn new(x: f64, y: f64, z: f64) -> Self {
         Self(DVec3::new(x, y, z))
@@ -32,6 +29,12 @@ impl MercatorCoords {
 
     /// Creates MercatorCoords from latitude and longitude in degrees (WGS84 / EPSG:4326).
     pub fn from_latlon(lat: f64, lon: f64) -> Self {
+        let mercator = DVec2::new(lon, lat).lonlat_to_mercator();
+        Self::new(mercator.x, mercator.y, 0.0)
+    }
+
+    /// Creates MercatorCoords from longitude and latitude in degrees (WGS84 / EPSG:4326).
+    pub fn from_lonlat(lon: f64, lat: f64) -> Self {
         let mercator = DVec2::new(lon, lat).lonlat_to_mercator();
         Self::new(mercator.x, mercator.y, 0.0)
     }
@@ -72,10 +75,8 @@ pub struct LocalOrigin {
 }
 
 impl LocalOrigin {
-    pub(crate) const DEFAULT_RECENTER_DISTANCE: f64 = 2_500.0;
-
     pub(crate) fn new(mercator_origin: DVec3) -> Self {
-        Self::with_distance(mercator_origin, Self::DEFAULT_RECENTER_DISTANCE)
+        Self::with_distance(mercator_origin, DEFAULT_RECENTER_DISTANCE)
     }
 
     pub(crate) fn with_distance(mercator_origin: DVec3, recenter_distance: f64) -> Self {

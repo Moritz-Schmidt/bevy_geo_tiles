@@ -1,62 +1,4 @@
-//! Render slippy map tiles inside a Bevy application without worrying about floating point drift
-//! or tile fetching boilerplate.
-//!
-//! # Features
-//! * Web Mercator (`EPSG:3857`) coordinate helpers built on `f64` precision.
-//! * A moving local origin that keeps Bevy world coordinates in a range that avoids floating point precision issues.
-//! * Automatic spawning, streaming, and culling of tiles for the active zoom level.
-//! * Pluggable tile downloader with configurable headers, URL templates, reverse-Y support, and on-disk caching.
-//! * Convenience components – for example [`MercatorCoords`] – so users can place objects on the map in projected coordinates.
-//!
-//! # Quick start
-//! Add the crate to `Cargo.toml` and register the [`MapPlugin`] alongside Bevy’s default plugins:
-//!
-//! ```no_run
-//! use bevy::prelude::*;
-//! use bevy_geo_tiles::MapPlugin;
-//!
-//! fn main() {
-//!     App::new()
-//!         .add_plugins(DefaultPlugins)
-//!         .add_plugins(MapPlugin::default())
-//!         .run();
-//! }
-//! ```
-//!
-//! To place an entity at a specific latitude/longitude pair, add the [`MercatorCoords`] component – the
-//! plugin keeps its transform in sync with the current local origin:
-//!
-//! ```no_run
-//! use bevy::prelude::*;
-//! use bevy_geo_tiles::{KeepDisplaySize, MapPlugin, MercatorCoords};
-//!
-//! fn main() {
-//!     App::new()
-//!         .add_plugins(DefaultPlugins)
-//!         .add_plugins(MapPlugin::default())
-//!         .add_systems(Startup, spawn_marker)
-//!         .run();
-//! }
-//!
-//! fn spawn_marker(mut commands: Commands) {
-//!     commands.spawn((
-//!         Sprite {
-//!             color: Color::linear_rgb(1.0, 0.0, 0.0),
-//!             custom_size: Some(Vec2::splat(1.0)),
-//!             ..Default::default()
-//!         },
-//!         MercatorCoords::from_latlon(52.5200, 13.4050).with_z(5.0),
-//!         KeepDisplaySize, // optional: keeps the sprite size constant on screen when zooming
-//!     ));
-//! }
-//! ```
-//!
-//! # Coordinate systems
-//! * **Mercator space** uses `DVec2`/`DVec3` in meters relative to the Web Mercator map projection.
-//! * **Local space** is Bevy’s world coordinate system (floating point `Vec2`/`Vec3`). The [`LocalOrigin`] resource
-//!   tracks the current offset between the two and recenters automatically when the camera drifts too far from the origin.
-//!
-//! See [`MapPlugin`] for configuration options, including tile server customization and cache settings.
+#![doc = include_str!("../README.md")]
 #![allow(clippy::type_complexity)]
 
 use std::{ops::RangeInclusive, path::PathBuf};
@@ -69,7 +11,6 @@ use bevy::{
 use crate::{
     coord_conversions::tile_to_mercator_aabb,
     pancam::{MainCam, NewScale, SmoothZoom, pancam_plugin},
-    shapes::shapes_plugin,
     tile_fetcher::{
         TileFetcher, apply_tile_fetch_results, default_cache_dir, queue_tile_downloads,
     },
@@ -79,8 +20,15 @@ use tilemath::{Tile as TileMathTile, TileIterator};
 mod coord_conversions;
 mod local_origin;
 mod local_origin_conversions;
+
 mod pancam;
+
+#[cfg(feature = "bevy_pancam")]
+use bevy_pancam::{PanCam, PanCamPlugin};
+
+#[cfg(feature = "shapes")]
 pub mod shapes;
+
 mod tile_fetcher;
 pub use coord_conversions::{ToBBox, ToTileCoords, ViewportConv, WebMercatorConversion};
 pub use local_origin::{LocalOrigin, LocalSpace, MercatorAabb2d, MercatorCoords};
@@ -97,14 +45,20 @@ const ZOOM_DISTANCE_FACTOR: u32 = 10;
 
 pub const MIN_ORTHO_SCALE: f32 = 0.1;
 
+#[cfg(not(feature = "bevy_pancam"))]
+pub const SCALE_ZOOM_OFFSET: f32 = 24.5;
+
+#[cfg(feature = "bevy_pancam")]
+pub const SCALE_ZOOM_OFFSET: f32 = 18.0;
+
 fn zoom_to_scale(zoom: u8, zoom_offset: i8) -> f32 {
     let clamped =
         zoom.clamp(*ZOOM_RANGE.start(), *ZOOM_RANGE.end()) as i32 - 1 - zoom_offset as i32;
-    2.0f32.powf(24.5 - clamped as f32)
+    2.0f32.powf(SCALE_ZOOM_OFFSET - clamped as f32)
 }
 
 fn scale_to_zoom(scale: f32, zoom_offset: i8) -> u8 {
-    let zoom = (24.5 - scale.log2()).round() as i32 - 1 - zoom_offset as i32;
+    let zoom = (SCALE_ZOOM_OFFSET - scale.log2()).round() as i32 - 1 - zoom_offset as i32;
     zoom.clamp(*ZOOM_RANGE.start() as i32, *ZOOM_RANGE.end() as i32) as u8
 }
 
@@ -122,7 +76,7 @@ pub struct MapPlugin {
     /// zoom level offset applied when fetching tiles (can be negative).
     /// For example, with an offset of -1, tile 3/4/2 will be fetched when tile 4/4/2 is requested.
     pub zoom_offset: i8,
-    /// Tile source URL template, e.g. "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+    /// Tile source URL template, e.g. "<https://tile.openstreetmap.org/{z}/{x}/{y}.png>"
     pub tile_source: String,
     /// headers to add to tile requests
     /// Defaults to: `User-Agent: bevy-geo-tiles/0.1`
@@ -160,6 +114,15 @@ impl Plugin for MapPlugin {
         let origin = LocalOrigin::new(initial_mercator);
         let camera_translation = initial_mercator.mercator_to_local(&origin).as_vec3();
 
+        #[cfg(feature = "bevy_pancam")]
+        let app = app.add_plugins(PanCamPlugin);
+
+        #[cfg(not(feature = "bevy_pancam"))]
+        let app = app.add_plugins(pancam_plugin);
+
+        #[cfg(feature = "shapes")]
+        let app = app.add_plugins(shapes::shapes_plugin);
+
         app.insert_resource(TileFetchConfig {
             url_template: self.tile_source.clone(),
             headers: self.headers.iter().cloned().collect(),
@@ -170,17 +133,23 @@ impl Plugin for MapPlugin {
         })
         .init_resource::<TileFetcher>()
         .insert_resource(origin)
-        .add_plugins(pancam_plugin)
-        .add_plugins(shapes_plugin)
         .add_systems(
             Startup,
             (move |mut commands: Commands| {
                 commands
                     .spawn((
                         Camera2d,
+                        #[cfg(feature = "bevy_pancam")]
+                        Projection::Orthographic(OrthographicProjection {
+                            scale: target_scale,
+                            ..OrthographicProjection::default_2d()
+                        }),
                         SmoothZoom { target_scale },
                         MainCam,
                         LocalSpace,
+                        #[cfg(feature = "bevy_pancam")]
+                        PanCam::default(),
+                        #[cfg(not(feature = "bevy_pancam"))]
                         Transform::from_translation(camera_translation)
                             .with_scale(Vec3::splat(0.01)),
                         Zoom(zoom),
@@ -201,9 +170,12 @@ impl Plugin for MapPlugin {
             Update,
             (
                 update_local_origin,
+                #[cfg(feature = "debug_draw")]
                 debug_draw,
                 spawn_new_tiles,
                 despawn_old_tiles,
+                #[cfg(feature = "bevy_pancam")]
+                handle_pancam_zoom,
             ),
         )
         .add_systems(
@@ -254,6 +226,20 @@ impl<'w, 's, M: Component> ZoomHelper<'w, 's, M> {
 #[derive(Component, Debug)]
 #[component(immutable)]
 pub struct Tile(pub TileMathTile);
+
+#[cfg(feature = "bevy_pancam")]
+fn handle_pancam_zoom(
+    mut query: Query<(&PanCam, &Camera, &Projection, &Transform), Changed<Transform>>,
+    mut commands: Commands,
+) {
+    for (_pancam, _camera, projection, _transform) in query.iter_mut() {
+        let proj = match projection {
+            Projection::Orthographic(proj) => proj,
+            _ => continue,
+        };
+        commands.trigger(NewScale(proj.scale));
+    }
+}
 
 fn handle_zoom_level(
     scale: On<NewScale>,
@@ -490,6 +476,7 @@ fn despawn_old_tiles(
     Ok(())
 }
 
+#[cfg(feature = "debug_draw")]
 pub fn debug_draw(
     mut commands: Commands,
     camera_query: Query<(Entity, &Camera, &GlobalTransform)>,

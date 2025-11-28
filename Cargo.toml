@@ -3,12 +3,34 @@ name = "bevy_geo_tiles"
 version = "0.1.0"
 edition = "2024"
 
+
+[features]
+bevy_pancam = ["dep:bevy_pancam"]
+shapes = ["dep:lyon"]
+debug_draw = []
+
+[[example]]
+name = "map"
+path = "examples/map.rs"
+
+[[example]]
+name = "marker"
+path = "examples/marker.rs"
+
+[[example]]
+name = "polylines"
+path = "examples/polylines.rs"
+required-features = ["shapes"]
+
+[[example]]
+name = "many_shapes"
+path = "examples/many_shapes.rs"
+required-features = ["shapes"]
+
 [dependencies]
 bevy = { version = "0.17", features = [
     "bevy_dev_tools",
     "dynamic_linking",
-    "http",
-    "https",
     "track_location",
 ] }
 miniproj = "0.10"
@@ -22,8 +44,8 @@ image = { version = "0.24", default-features = false, features = [
     "png",
     "jpeg",
 ] }
-earcut = "0.4.4"
-lyon = "1.0.16"
+lyon = { version = "1.0.16", optional = true }
+bevy_pancam = { version = "0.19.0", features = ["bevy_egui"], optional = true }
 
 [profile.dev]
 opt-level = 3

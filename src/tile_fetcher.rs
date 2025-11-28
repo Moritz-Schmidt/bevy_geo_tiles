@@ -7,6 +7,8 @@ use std::{
 
 use bevy::{
     asset::RenderAssetUsages,
+    log::tracing::trace_span,
+    log::*,
     prelude::*,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
     tasks::IoTaskPool,
@@ -96,6 +98,7 @@ impl TileFetchError {
     }
 }
 
+#[derive(Debug)]
 struct PreparedConfig {
     template: String,
     headers: Vec<(HeaderName, HeaderValue)>,
@@ -120,6 +123,7 @@ impl PreparedConfig {
     }
 }
 
+#[derive(Debug)]
 struct TileImagePayload {
     bytes: Vec<u8>,
     cached_path: Option<PathBuf>,
@@ -127,7 +131,7 @@ struct TileImagePayload {
     from_cache: bool,
 }
 
-#[derive(Resource)]
+#[derive(Resource, Debug)]
 pub struct TileFetcher {
     client: Arc<Client>,
     config: Arc<PreparedConfig>,
@@ -217,6 +221,7 @@ impl TileFetcher {
     )> {
         let mut responses = Vec::new();
         loop {
+            let _span_once = info_span!("drain_ready_once", name = "drain_ready_once").entered();
             let message = {
                 let receiver = self.receiver.lock().unwrap();
                 receiver.try_recv()
@@ -243,6 +248,7 @@ fn fetch_tile(
 ) -> Result<TileImagePayload, TileFetchError> {
     let cache_path = config.cache_path(&tile);
     if cache_path.exists() {
+        debug!("loading cached tile (x={}, y={})", tile.x, tile.y);
         let data = fs::read(&cache_path).map_err(TileFetchError::from_io)?;
         return Ok(TileImagePayload {
             bytes: data,
@@ -251,7 +257,7 @@ fn fetch_tile(
             from_cache: true,
         });
     }
-
+    debug!("fetching tile (x={}, y={})", tile.x, tile.y);
     let mut request = client.get(config.format_url(&tile));
     for (name, value) in &config.headers {
         request = request.header(name.clone(), value.clone());
@@ -337,6 +343,7 @@ pub fn apply_tile_fetch_results(
     mut fetcher: ResMut<TileFetcher>,
     mut images: ResMut<Assets<Image>>,
 ) {
+    let _span = trace_span!("apply_tile_fetch_results",).entered();
     for (entities, tile, result) in fetcher.drain_ready() {
         match result {
             Ok(payload) => {
