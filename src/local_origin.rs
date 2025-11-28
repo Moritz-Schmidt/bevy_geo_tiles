@@ -94,10 +94,6 @@ impl LocalOrigin {
         self.recenter_distance
     }
 
-    pub(crate) fn set_mercator_origin(&mut self, origin: DVec3) {
-        self.mercator_origin = origin;
-    }
-
     pub(crate) fn shift_mercator_origin(&mut self, delta: DVec3) {
         self.mercator_origin += delta;
     }

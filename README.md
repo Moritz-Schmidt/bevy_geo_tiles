@@ -36,9 +36,10 @@ fn main() {
 For more examples, see the [`examples`](./examples) folder.
 
 ## Coordinate systems
-* **Mercator space** uses `DVec2`/`DVec3` in meters relative to the Web Mercator map projection.
-* **Local space** is Bevy’s world coordinate system (floating point `Vec2`/`Vec3`). The [`LocalOrigin`] resource
-tracks the current offset between the two and recenters automatically when the camera drifts too far from the origin.
+- **Mercator space** uses `DVec2`/`DVec3` in meters relative to the Web Mercator map projection.
+- **Local space** is Bevy’s world coordinate system (floating point `Vec2`/`Vec3`). 
+
+The [`LocalOrigin`] resource tracks the current offset between the two and recenters automatically when the camera drifts too far from the origin.
 
 See [`MapPlugin`] for configuration options, including tile server customization and cache settings.
 

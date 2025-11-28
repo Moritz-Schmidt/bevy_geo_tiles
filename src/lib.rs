@@ -4,8 +4,8 @@
 use std::{ops::RangeInclusive, path::PathBuf};
 
 use bevy::{
-    ecs::system::SystemParam, math::bounding::BoundingVolume, picking::pointer::PointerLocation,
-    platform::collections::HashSet, prelude::*, window::PrimaryWindow,
+    ecs::system::SystemParam, math::bounding::BoundingVolume,
+    platform::collections::HashSet, prelude::*,
 };
 
 use crate::{
