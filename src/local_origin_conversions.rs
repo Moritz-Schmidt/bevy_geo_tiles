@@ -22,10 +22,7 @@ impl LocalOriginConversion for Vec2 {
     type MercatorOutput = DVec2;
     type Output = Self;
     fn mercator_to_local(&self, origin: &LocalOrigin) -> Self {
-        Vec2 {
-            x: (self.x as f64 - origin.mercator_origin().x) as f32,
-            y: (self.y as f64 - origin.mercator_origin().y) as f32,
-        }
+        (self.as_dvec2() - origin.mercator_origin().truncate()).as_vec2()
     }
 
     fn local_to_mercator(&self, origin: &LocalOrigin) -> Self::MercatorOutput {
@@ -51,17 +48,11 @@ impl LocalOriginConversion for DVec2 {
     type MercatorOutput = Self;
     type Output = Self;
     fn mercator_to_local(&self, origin: &LocalOrigin) -> Self {
-        DVec2 {
-            x: self.x - origin.mercator_origin().x,
-            y: self.y - origin.mercator_origin().y,
-        }
+        self - origin.mercator_origin().truncate()
     }
 
     fn local_to_mercator(&self, origin: &LocalOrigin) -> Self {
-        DVec2 {
-            x: self.x + origin.mercator_origin().x,
-            y: self.y + origin.mercator_origin().y,
-        }
+        self + origin.mercator_origin().truncate()
     }
 
     fn lonlat_to_local(&self, origin: &LocalOrigin) -> Self {

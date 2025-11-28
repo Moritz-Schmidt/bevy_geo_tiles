@@ -22,6 +22,8 @@ image = { version = "0.24", default-features = false, features = [
     "png",
     "jpeg",
 ] }
+earcut = "0.4.4"
+lyon = "1.0.16"
 
 [profile.dev]
 opt-level = 3

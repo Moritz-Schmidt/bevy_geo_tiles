@@ -343,7 +343,7 @@ pub fn apply_tile_fetch_results(
                 if payload.from_cache
                     && let Some(path) = &payload.cached_path
                 {
-                    debug!("tile {:?} served from cache {}", tile, path.display());
+                    trace!("tile {:?} served from cache {}", tile, path.display());
                 }
 
                 if let Some(content_type) = &payload.content_type {
