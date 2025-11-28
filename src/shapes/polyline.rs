@@ -1,6 +1,6 @@
-use bevy::{asset::RenderAssetUsages, math::DVec2, prelude::*};
+use bevy::{asset::RenderAssetUsages, math::DVec2, mesh::Indices, prelude::*};
 
-use crate::{MercatorCoords, pancam::NewScale, shapes::utils::points_to_relative};
+use crate::{MercatorCoords, pancam::NewScale, shapes::utils::*};
 use lyon::{
     math::point,
     path::{LineCap, LineJoin, Path},
@@ -15,48 +15,10 @@ pub(crate) fn polyline_plugin(app: &mut App) {
         .add_observer(insert_polyline_initial_style);
 }
 
-#[derive(Debug, Copy, Clone)]
-struct ColorVertex {
-    position: [f32; 3],
-    color: [f32; 4],
-}
-
-#[derive(Debug, Copy, Clone)]
-struct SimpleVertex {
-    position: [f32; 3],
-}
-
-struct WithColor;
-struct WithoutColor;
-
-fn attr_to_color(attributes: &[f32]) -> Option<[f32; 4]> {
-    Some([
-        *attributes.get(1)?,
-        *attributes.get(2)?,
-        *attributes.get(3)?,
-        *attributes.get(4)?,
-    ])
-}
-
-impl StrokeVertexConstructor<ColorVertex> for WithColor {
-    fn new_vertex(&mut self, mut vertex: lyon::tessellation::StrokeVertex) -> ColorVertex {
-        let attributes = vertex.interpolated_attributes();
-        let color = attr_to_color(attributes).unwrap_or([1.0, 1.0, 1.0, 1.0]);
-        ColorVertex {
-            position: vertex.position().extend(0.0).to_array(),
-            color,
-        }
-    }
-}
-
-impl StrokeVertexConstructor<SimpleVertex> for WithoutColor {
-    fn new_vertex(&mut self, vertex: lyon::tessellation::StrokeVertex) -> SimpleVertex {
-        SimpleVertex {
-            position: vertex.position().extend(0.0).to_array(),
-        }
-    }
-}
-
+/// A polyline defined by a list of points in mercator coordinates.
+///
+/// When adding a GeoPolyline component to an entity, a Mesh2d, MeshMaterial2d and [MercatorCoords] will be automatically created and added to the entity.
+/// Set the associated [GeoPolylineConfig] to modify the appearance of the polyline.
 #[derive(Component, Debug, Clone)]
 #[require(GeoPolylineConfig)]
 #[derive(Default)]
@@ -65,26 +27,37 @@ pub struct GeoPolyline {
     pub points: Vec<DVec2>,
 }
 
+/// Style options for rendering a GeoPolyline.
+///
+/// The style can be set using the [GeoPolylineConfig] component.
+///
 #[derive(Debug, Clone)]
 pub enum PolylineStyle {
-    ConstantWidthConstantColor {
-        width: f32,
-        color: Color,
-    },
-    ConstantWidthVariableColor {
-        width: f32,
-        colors: Vec<Color>,
-    },
-    VariableWidthConstantColor {
-        widths: Vec<f32>,
-        color: Color,
-    },
+    /// Constant width and constant color for the entire polyline.
+    ConstantWidthConstantColor { width: f32, color: Color },
+
+    /// Constant width and variable color for the entire polyline.
+    /// The length of the `colors` vector should match the number of points in the polyline.
+    /// a gradient will be rendered between the colors.
+    ConstantWidthVariableColor { width: f32, colors: Vec<Color> },
+
+    /// Variable width and constant color for the entire polyline.
+    /// The length of the `widths` vector should match the number of points in the polyline.
+    VariableWidthConstantColor { widths: Vec<f32>, color: Color },
+
+    /// Variable width and variable color for the entire polyline.
+    /// The length of the `widths` and `colors` vectors should match the number of points in the polyline.
     VariableWidthVariableColor {
         widths: Vec<f32>,
         colors: Vec<Color>,
     },
 }
 
+/// Configuration for rendering a GeoPolyline.
+///
+/// Use this component to set the style and appearance of a [GeoPolyline].
+/// see [PolylineStyle] for available styles.
+/// `start_cap`, `end_cap`, `line_join`, `miter_limit` and `tolerance` are equivalents to the Lyon [StrokeOptions] settings.
 #[derive(Component, Debug, Clone)]
 pub struct GeoPolylineConfig {
     pub style: PolylineStyle,
@@ -107,7 +80,7 @@ impl GeoPolylineConfig {
             end_cap: LineCap::Round,
             line_join: LineJoin::Round,
             miter_limit: 4.0,
-            tolerance: 0.1,
+            tolerance: 1.0,
         }
     }
 }
@@ -123,7 +96,7 @@ impl Default for GeoPolylineConfig {
             end_cap: LineCap::Round,
             line_join: LineJoin::Round,
             miter_limit: 4.0,
-            tolerance: 0.1,
+            tolerance: 1.0,
         }
     }
 }
@@ -134,6 +107,7 @@ struct LyonPolyline {
     path: Path,
 }
 
+/// Marker component to keep the polyline width in display size regardless of zoom level.
 #[derive(Component, Debug, Clone)]
 pub struct KeepDisplayWidth;
 
@@ -164,9 +138,8 @@ fn sync_polyline(
 ) {
     for (entity, polyline, config) in query.iter() {
         let (vertices, first_pos) = points_to_relative(&polyline.points);
-        match &config.style {
+        let path = match &config.style {
             PolylineStyle::ConstantWidthConstantColor { width: _, color: _ } => {
-                debug!("Building ConstantWidthConstantColor polyline");
                 let mut path_builder = Path::builder();
                 if let Some((first, rest)) = vertices.split_first() {
                     path_builder.begin(point(first.x, first.y));
@@ -175,13 +148,9 @@ fn sync_polyline(
                     });
                     path_builder.end(false);
                 }
-                let path = path_builder.build();
-                commands
-                    .entity(entity)
-                    .insert((LyonPolyline { first_pos, path },));
+                path_builder.build()
             }
             PolylineStyle::ConstantWidthVariableColor { width: _, colors } => {
-                debug!("Building ConstantWidthVariableColor polyline");
                 let mut path_builder = Path::builder_with_attributes(4);
                 if let Some((first, rest)) = vertices.split_first() {
                     let color = color_to_f32_array(colors.first());
@@ -192,13 +161,9 @@ fn sync_polyline(
                     });
                     path_builder.end(false);
                 }
-                let path = path_builder.build();
-                commands
-                    .entity(entity)
-                    .insert((LyonPolyline { first_pos, path },));
+                path_builder.build()
             }
             PolylineStyle::VariableWidthConstantColor { widths, color: _ } => {
-                debug!("Building VariableWidthConstantColor polyline");
                 let mut path_builder = Path::builder_with_attributes(1);
                 if let Some((first, rest)) = vertices.split_first() {
                     let width = widths.first().cloned().unwrap_or(1.0f32);
@@ -209,13 +174,9 @@ fn sync_polyline(
                     });
                     path_builder.end(false);
                 }
-                let path = path_builder.build();
-                commands
-                    .entity(entity)
-                    .insert((LyonPolyline { first_pos, path },));
+                path_builder.build()
             }
             PolylineStyle::VariableWidthVariableColor { widths, colors } => {
-                debug!("Building VariableWidthVariableColor polyline");
                 let mut path_builder = Path::builder_with_attributes(5);
                 if let Some((first, rest)) = vertices.split_first() {
                     let width = widths.first().cloned().unwrap_or(1.0f32);
@@ -230,12 +191,12 @@ fn sync_polyline(
                     });
                     path_builder.end(false);
                 }
-                let path = path_builder.build();
-                commands
-                    .entity(entity)
-                    .insert((LyonPolyline { first_pos, path },));
+                path_builder.build()
             }
-        }
+        };
+        commands
+            .entity(entity)
+            .insert((LyonPolyline { first_pos, path },));
     }
 }
 
@@ -253,9 +214,14 @@ fn sync_polyline_config(
             .with_miter_limit(config.miter_limit)
             .with_tolerance(config.tolerance);
         let mut tessellator = StrokeTessellator::new();
-        let (mesh, material) = match &config.style {
+
+        let mut mesh = Mesh::new(
+            bevy::mesh::PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        );
+
+        let (vertices, indices, color): (Vec<[f32; 3]>, Vec<u32>, Color) = match &config.style {
             PolylineStyle::ConstantWidthConstantColor { width, color } => {
-                debug!("Tessellating ConstantWidthConstantColor polyline");
                 stroke_options.line_width = *width;
                 let mut buffers: VertexBuffers<SimpleVertex, u32> = VertexBuffers::new();
                 tessellator
@@ -265,25 +231,13 @@ fn sync_polyline_config(
                         &mut BuffersBuilder::new(&mut buffers, WithoutColor),
                     )
                     .unwrap();
-
-                let mut mesh = Mesh::new(
-                    bevy::mesh::PrimitiveTopology::TriangleList,
-                    RenderAssetUsages::default(),
-                );
-                let positions: Vec<[f32; 3]> =
-                    buffers.vertices.iter().map(|v| v.position).collect();
-                mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-                mesh.insert_indices(bevy::mesh::Indices::U32(buffers.indices));
-
-                let material = ColorMaterial {
-                    color: *color,
-                    ..Default::default()
-                };
-
-                (mesh, material)
+                (
+                    buffers.vertices.iter().map(|v| v.position).collect(),
+                    buffers.indices,
+                    *color,
+                )
             }
             PolylineStyle::ConstantWidthVariableColor { width, colors: _ } => {
-                debug!("Tessellating ConstantWidthVariableColor polyline");
                 stroke_options.line_width = *width;
                 let mut buffers: VertexBuffers<ColorVertex, u32> = VertexBuffers::new();
                 tessellator
@@ -293,22 +247,15 @@ fn sync_polyline_config(
                         &mut BuffersBuilder::new(&mut buffers, WithColor),
                     )
                     .unwrap();
-
-                let mut mesh = Mesh::new(
-                    bevy::mesh::PrimitiveTopology::TriangleList,
-                    RenderAssetUsages::default(),
-                );
-                let positions: Vec<[f32; 3]> =
-                    buffers.vertices.iter().map(|v| v.position).collect();
-                mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-                mesh.insert_indices(bevy::mesh::Indices::U32(buffers.indices));
                 let colors: Vec<[f32; 4]> = buffers.vertices.iter().map(|v| v.color).collect();
                 mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
-
-                (mesh, ColorMaterial::default())
+                (
+                    buffers.vertices.iter().map(|v| v.position).collect(),
+                    buffers.indices,
+                    Color::WHITE,
+                )
             }
             PolylineStyle::VariableWidthConstantColor { widths: _, color } => {
-                debug!("Tessellating VariableWidthConstantColor polyline");
                 stroke_options.variable_line_width = Some(0);
                 let mut buffers: VertexBuffers<SimpleVertex, u32> = VertexBuffers::new();
                 tessellator
@@ -318,28 +265,16 @@ fn sync_polyline_config(
                         &mut BuffersBuilder::new(&mut buffers, WithoutColor),
                     )
                     .unwrap();
-
-                let mut mesh = Mesh::new(
-                    bevy::mesh::PrimitiveTopology::TriangleList,
-                    RenderAssetUsages::default(),
-                );
-                let positions: Vec<[f32; 3]> =
-                    buffers.vertices.iter().map(|v| v.position).collect();
-                mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-                mesh.insert_indices(bevy::mesh::Indices::U32(buffers.indices));
-
-                let material = ColorMaterial {
-                    color: *color,
-                    ..Default::default()
-                };
-
-                (mesh, material)
+                (
+                    buffers.vertices.iter().map(|v| v.position).collect(),
+                    buffers.indices,
+                    *color,
+                )
             }
             PolylineStyle::VariableWidthVariableColor {
                 widths: _,
                 colors: _,
             } => {
-                debug!("Tessellating VariableWidthVariableColor polyline");
                 stroke_options.variable_line_width = Some(0);
                 let mut buffers: VertexBuffers<ColorVertex, u32> = VertexBuffers::new();
                 tessellator
@@ -349,23 +284,20 @@ fn sync_polyline_config(
                         &mut BuffersBuilder::new(&mut buffers, WithColor),
                     )
                     .unwrap();
-
-                let mut mesh = Mesh::new(
-                    bevy::mesh::PrimitiveTopology::TriangleList,
-                    RenderAssetUsages::default(),
-                );
-                let positions: Vec<[f32; 3]> = buffers
-                    .vertices
-                    .iter()
-                    .map(|v| [v.position[0], v.position[1], 0.0])
-                    .collect();
-                mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-                mesh.insert_indices(bevy::mesh::Indices::U32(buffers.indices));
                 let colors: Vec<[f32; 4]> = buffers.vertices.iter().map(|v| v.color).collect();
                 mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
-
-                (mesh, ColorMaterial::default())
+                (
+                    buffers.vertices.iter().map(|v| v.position).collect(),
+                    buffers.indices,
+                    Color::WHITE,
+                )
             }
+        };
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vertices);
+        mesh.insert_indices(Indices::U32(indices));
+        let material = ColorMaterial {
+            color,
+            ..Default::default()
         };
         commands.entity(entity).insert((
             Mesh2d(meshes.add(mesh)),
