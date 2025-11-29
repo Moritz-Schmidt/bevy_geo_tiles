@@ -43,6 +43,17 @@ The [`LocalOrigin`] resource tracks the current offset between the two and recen
 
 See [`MapPlugin`] for configuration options, including tile server customization and cache settings.
 
+## Limitations
+- only supports 2D views (orthographic camera).
+- no support for WASM targets (tile fetching and file system caching need to be adapted, PRs welcome).
+- only supports 256x256 raster tiles.
+
+## Compatibility
+| bevy  | bevy_geo_tiles      |
+|-------|---------------------|
+| 0.17  | 0.1                 |
+
+
 ## License
 This project is dual-licensed:
 - Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)

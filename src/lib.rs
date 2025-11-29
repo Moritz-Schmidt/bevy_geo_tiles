@@ -4,13 +4,15 @@
 use std::{ops::RangeInclusive, path::PathBuf};
 
 use bevy::{
-    ecs::system::SystemParam, math::bounding::BoundingVolume,
-    platform::collections::HashSet, prelude::*,
+    ecs::system::SystemParam, math::bounding::BoundingVolume, platform::collections::HashSet,
+    prelude::*,
 };
+
+#[cfg(feature = "debug_draw")]
+use bevy::{picking::pointer::PointerLocation, window::PrimaryWindow};
 
 use crate::{
     coord_conversions::tile_to_mercator_aabb,
-    pancam::{MainCam, NewScale, SmoothZoom, pancam_plugin},
     tile_fetcher::{
         TileFetcher, apply_tile_fetch_results, default_cache_dir, queue_tile_downloads,
     },
@@ -21,6 +23,7 @@ mod coord_conversions;
 mod local_origin;
 mod local_origin_conversions;
 
+#[cfg(not(feature = "bevy_pancam"))]
 mod pancam;
 
 #[cfg(feature = "bevy_pancam")]
@@ -50,6 +53,13 @@ pub const SCALE_ZOOM_OFFSET: f32 = 24.5;
 
 #[cfg(feature = "bevy_pancam")]
 pub const SCALE_ZOOM_OFFSET: f32 = 18.0;
+
+/// Marker component for the main camera
+#[derive(Component, Debug)]
+pub struct MainCam;
+
+#[derive(Event, Debug)]
+pub(crate) struct NewScale(pub f32);
 
 fn zoom_to_scale(zoom: u8, zoom_offset: i8) -> f32 {
     let clamped =
@@ -112,6 +122,8 @@ impl Plugin for MapPlugin {
             .lonlat_to_mercator()
             .extend(1.0);
         let origin = LocalOrigin::new(initial_mercator);
+
+        #[cfg(not(feature = "bevy_pancam"))]
         let camera_translation = initial_mercator.mercator_to_local(&origin).as_vec3();
 
         #[cfg(feature = "bevy_pancam")]
@@ -144,6 +156,7 @@ impl Plugin for MapPlugin {
                             scale: target_scale,
                             ..OrthographicProjection::default_2d()
                         }),
+                        #[cfg(not(feature = "bevy_pancam"))]
                         SmoothZoom { target_scale },
                         MainCam,
                         LocalSpace,
@@ -231,12 +244,17 @@ pub struct Tile(pub TileMathTile);
 fn handle_pancam_zoom(
     mut query: Query<(&PanCam, &Camera, &Projection, &Transform), Changed<Transform>>,
     mut commands: Commands,
+    mut prev_scale: Local<f32>,
 ) {
     for (_pancam, _camera, projection, _transform) in query.iter_mut() {
         let proj = match projection {
             Projection::Orthographic(proj) => proj,
             _ => continue,
         };
+        if (proj.scale - *prev_scale).abs() < 0.001 {
+            continue;
+        }
+        *prev_scale = proj.scale;
         commands.trigger(NewScale(proj.scale));
     }
 }

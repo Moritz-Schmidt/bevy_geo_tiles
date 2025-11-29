@@ -7,10 +7,6 @@ pub(crate) fn pancam_plugin(app: &mut App) {
         .add_systems(Update, (pinch_zoom, zoom_smooth).chain());
 }
 
-/// Marker component for the main camera
-#[derive(Component, Debug)]
-pub struct MainCam;
-
 fn setup(mut commands: Commands, window: Single<Entity, With<Window>>) {
     commands.entity(*window).observe(camera_drag).observe(zoom);
 }
@@ -53,9 +49,6 @@ fn pinch_zoom(
         zoom.target_scale = zoom.target_scale.max(MIN_ORTHO_SCALE);
     }
 }
-
-#[derive(Event, Debug)]
-pub(crate) struct NewScale(pub f32);
 
 fn zoom_smooth(
     mut commands: Commands,

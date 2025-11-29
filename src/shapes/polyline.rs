@@ -1,6 +1,6 @@
 use bevy::{asset::RenderAssetUsages, math::DVec2, mesh::Indices, prelude::*};
 
-use crate::{MercatorCoords, pancam::NewScale, shapes::utils::*};
+use crate::{MercatorCoords, NewScale, shapes::utils::*};
 use lyon::{
     math::point,
     path::{LineCap, LineJoin, Path},

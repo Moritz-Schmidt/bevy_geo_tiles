@@ -1,9 +1,7 @@
-use bevy::log::tracing::instrument;
 use bevy::math::{DVec2, Vec2};
 
 use lyon::tessellation::{FillVertexConstructor, StrokeVertexConstructor};
 
-#[instrument]
 pub(crate) fn points_to_relative(points: &Vec<DVec2>) -> (Vec<Vec2>, DVec2) {
     if points.is_empty() {
         return (vec![], DVec2::ZERO);
