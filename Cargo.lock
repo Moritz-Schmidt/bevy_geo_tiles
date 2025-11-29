@@ -714,7 +714,6 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "bevy_pancam",
- "getrandom 0.2.16",
  "image 0.24.9",
  "lyon",
  "miniproj",
