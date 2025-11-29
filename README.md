@@ -3,6 +3,8 @@ Open street map (or any other slippy map / TMS tile source) integration for Bevy
 
 This project is work in progress. Expect breaking changes, incomplete features and bugs.
 
+![Screenshot of the marker example](screenshot.png)
+
 ## Features
 - Load and display map tiles as Bevy textures
 - Basic 2D camera controls (pan and zoom)
