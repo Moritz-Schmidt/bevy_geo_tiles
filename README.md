@@ -53,6 +53,7 @@ See [`MapPlugin`] for configuration options, including tile server customization
 ## Compatibility
 | bevy  | bevy_geo_tiles      |
 |-------|---------------------|
+| 0.18  | 0.2                 |
 | 0.17  | 0.1                 |
 
 
