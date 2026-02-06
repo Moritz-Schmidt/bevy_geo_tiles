@@ -1,6 +1,6 @@
 [package]
 name = "bevy_geo_tiles"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "Bevy plugin for displaying slippy-map tiles like OpenStreetMap raster tiles."
