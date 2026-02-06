@@ -37,7 +37,7 @@ required-features = ["shapes"]
 
 
 [dependencies]
-bevy = { version = "0.17", features = [
+bevy = { version = "0.18", features = [
     "bevy_asset",
     "bevy_camera",
     "bevy_render",
@@ -49,19 +49,21 @@ bevy = { version = "0.17", features = [
 miniproj = "0.10"
 miniproj-ops = "0.10"
 tilemath = "0.3.0"
-reqwest = { version = "0.12", default-features = false, features = [
+reqwest = { version = "0.13", default-features = false, features = [
     "blocking",
-    "rustls-tls",
+    "rustls",
 ] }
-image = { version = "0.24", default-features = false, features = [
+image = { version = "0.25", default-features = false, features = [
     "png",
     "jpeg",
 ] }
 lyon = { version = "1.0.16", optional = true }
-bevy_pancam = { version = "0.19.0", features = ["bevy_egui"], optional = true }
+bevy_pancam = { version = "0.20.0", features = [
+    "bevy_egui_0_39",
+], optional = true }
 
 [dev-dependencies]
-bevy = { version = "0.17", default-features = true }
+bevy = { version = "0.18", default-features = true }
 
 [profile.dev]
 opt-level = 3
