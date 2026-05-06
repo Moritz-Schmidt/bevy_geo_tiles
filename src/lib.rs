@@ -9,7 +9,7 @@ use bevy::{
 };
 
 #[cfg(feature = "debug_draw")]
-use bevy::{picking::pointer::PointerLocation, window::PrimaryWindow};
+use bevy::{camera::RenderTarget, picking::pointer::PointerLocation, window::PrimaryWindow};
 
 use crate::{
     coord_conversions::tile_to_mercator_aabb,
@@ -151,6 +151,8 @@ impl Plugin for MapPlugin {
                 commands
                     .spawn((
                         Camera2d,
+                        #[cfg(feature = "debug_draw")]
+                        RenderTarget::default(),
                         #[cfg(feature = "bevy_pancam")]
                         Projection::Orthographic(OrthographicProjection {
                             scale: target_scale,
@@ -497,7 +499,7 @@ fn despawn_old_tiles(
 #[cfg(feature = "debug_draw")]
 pub fn debug_draw(
     mut commands: Commands,
-    camera_query: Query<(Entity, &Camera, &GlobalTransform)>,
+    camera_query: Query<(Entity, &Camera, &RenderTarget, &GlobalTransform)>,
     primary_window: Query<Entity, With<PrimaryWindow>>,
     pointers: Query<(Entity, &PointerLocation)>,
     scale: Res<UiScale>,
@@ -507,17 +509,18 @@ pub fn debug_draw(
         let Some(pointer_location) = &location.location() else {
             continue;
         };
-        for (cam_e, camera, cam_global_transform) in camera_query.iter().filter(|(_, camera, _)| {
-            camera
-                .target
-                .normalize(primary_window.single().ok())
-                .is_some_and(|target| target == pointer_location.target)
-        }) {
+        for (cam_e, camera, _render_target, cam_global_transform) in
+            camera_query.iter().filter(|(_, _, render_target, _)| {
+                render_target
+                    .normalize(primary_window.single().ok())
+                    .is_some_and(|target| target == pointer_location.target)
+            })
+        {
             let mut pointer_pos = pointer_location.position;
             if let Some(viewport) = camera_query
                 .get(cam_e)
                 .ok()
-                .and_then(|(_, camera, _)| camera.logical_viewport_rect())
+                .and_then(|(_, camera, _, _)| camera.logical_viewport_rect())
             {
                 pointer_pos -= viewport.min;
             }
