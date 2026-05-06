@@ -1,9 +1,18 @@
 use std::{
     collections::HashMap,
-    fmt, fs,
+    fmt,
     path::PathBuf,
     sync::{Arc, Mutex, mpsc},
 };
+
+#[cfg(target_arch = "wasm32")]
+use std::collections::{HashSet, VecDeque};
+
+#[cfg(target_arch = "wasm32")]
+use std::cell::RefCell;
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::fs;
 
 use bevy::{
     asset::RenderAssetUsages,
@@ -16,12 +25,25 @@ use bevy::{
 use image::{GenericImageView, ImageError};
 use reqwest::{
     StatusCode,
-    blocking::Client,
     header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue},
 };
 use tilemath::Tile as TileMathTile;
 
 use crate::Tile;
+
+#[cfg(target_arch = "wasm32")]
+use indexed_db_futures::{
+    database::Database,
+    prelude::*,
+    transaction::TransactionMode,
+    typed_array::Uint8Array,
+};
+
+#[cfg(not(target_arch = "wasm32"))]
+use reqwest::blocking::Client;
+
+#[cfg(target_arch = "wasm32")]
+use reqwest::Client;
 
 /// Configuration for downloading map tiles.
 #[derive(Resource, Clone, Debug)]
@@ -43,8 +65,12 @@ pub struct TileFetchConfig {
 
 impl Default for TileFetchConfig {
     fn default() -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
         let mut headers = HashMap::new();
+        #[cfg(not(target_arch = "wasm32"))]
         headers.insert("User-Agent".to_string(), "bevy-geo-tiles/0.1".to_string());
+        #[cfg(target_arch = "wasm32")]
+        let headers = HashMap::new();
         Self {
             url_template: "https://tile.openstreetmap.org/{z}/{x}/{y}.png".to_string(),
             headers,
@@ -56,10 +82,16 @@ impl Default for TileFetchConfig {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn default_cache_dir() -> PathBuf {
     std::env::var("BEVY_GEO_TILES_CACHE")
         .map(PathBuf::from)
         .unwrap_or_else(|_| std::env::temp_dir().join("bevy_geo_tiles_cache"))
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn default_cache_dir() -> PathBuf {
+    PathBuf::new()
 }
 
 /// Error type for tile fetching operations.
@@ -89,6 +121,7 @@ impl TileFetchError {
         Self::Network(err.to_string())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn from_io(err: std::io::Error) -> Self {
         Self::Io(err.to_string())
     }
@@ -102,6 +135,7 @@ impl TileFetchError {
 struct PreparedConfig {
     template: String,
     headers: Vec<(HeaderName, HeaderValue)>,
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     cache_directory: PathBuf,
     cache_extension: String,
 }
@@ -114,6 +148,7 @@ impl PreparedConfig {
             .replace("{y}", &tile.y.to_string())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn cache_path(&self, tile: &TileMathTile) -> PathBuf {
         let mut path = self.cache_directory.clone();
         path.push(tile.zoom.to_string());
@@ -138,6 +173,8 @@ pub struct TileFetcher {
     sender: mpsc::Sender<(TileMathTile, Result<TileImagePayload, TileFetchError>)>,
     receiver: Arc<Mutex<mpsc::Receiver<(TileMathTile, Result<TileImagePayload, TileFetchError>)>>>,
     waiting: HashMap<TileMathTile, Vec<Entity>>,
+    #[cfg(target_arch = "wasm32")]
+    lru: Arc<Mutex<CacheLru>>,
 }
 
 impl FromWorld for TileFetcher {
@@ -155,6 +192,10 @@ impl TileFetcher {
         let mut default_headers = HeaderMap::new();
         let mut prepared_headers = Vec::new();
         for (name, value) in &config.headers {
+            #[cfg(target_arch = "wasm32")]
+            if name.eq_ignore_ascii_case("user-agent") {
+                continue;
+            }
             let header_name = HeaderName::from_bytes(name.as_bytes())
                 .map_err(|err| TileFetchError::Network(err.to_string()))?;
             let header_value = HeaderValue::from_str(value)
@@ -175,6 +216,10 @@ impl TileFetcher {
             cache_extension: config.cache_extension,
         };
 
+        #[cfg(target_arch = "wasm32")]
+        let lru = CacheLru::seed_from_storage();
+
+        #[cfg(not(target_arch = "wasm32"))]
         if !prepared.cache_directory.exists() {
             fs::create_dir_all(&prepared.cache_directory).map_err(TileFetchError::from_io)?;
         }
@@ -187,6 +232,8 @@ impl TileFetcher {
             sender,
             receiver: Arc::new(Mutex::new(receiver)),
             waiting: HashMap::new(),
+            #[cfg(target_arch = "wasm32")]
+            lru,
         })
     }
 
@@ -203,9 +250,14 @@ impl TileFetcher {
         let client = Arc::clone(&self.client);
         let sender = self.sender.clone();
         let config = Arc::clone(&self.config);
+        #[cfg(target_arch = "wasm32")]
+        let lru = Arc::clone(&self.lru);
 
         IoTaskPool::get()
             .spawn(async move {
+                #[cfg(target_arch = "wasm32")]
+                let result = fetch_tile(config, client, tile, lru).await;
+                #[cfg(not(target_arch = "wasm32"))]
                 let result = fetch_tile(config, client, tile);
                 let _ = sender.send((tile, result));
             })
@@ -241,6 +293,7 @@ impl TileFetcher {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn fetch_tile(
     config: Arc<PreparedConfig>,
     client: Arc<Client>,
@@ -271,8 +324,8 @@ fn fetch_tile(
     let content_type = response
         .headers()
         .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .map(|s| s.to_string());
+        .and_then(|value: &HeaderValue| value.to_str().ok())
+        .map(str::to_owned);
     let bytes = response
         .bytes()
         .map_err(TileFetchError::from_network)?
@@ -286,6 +339,58 @@ fn fetch_tile(
     Ok(TileImagePayload {
         bytes,
         cached_path: Some(cache_path),
+        content_type,
+        from_cache: false,
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn fetch_tile(
+    config: Arc<PreparedConfig>,
+    client: Arc<Client>,
+    tile: TileMathTile,
+    lru: Arc<Mutex<CacheLru>>,
+) -> Result<TileImagePayload, TileFetchError> {
+    let cache_key = storage_cache_key(&config, &tile);
+    if let Some(data) = read_local_tile(&cache_key, &lru).await? {
+        debug!("loading cached tile from IndexedDB (x={}, y={})", tile.x, tile.y);
+        return Ok(TileImagePayload {
+            bytes: data,
+            cached_path: None,
+            content_type: None,
+            from_cache: true,
+        });
+    }
+
+    debug!("fetching tile (x={}, y={})", tile.x, tile.y);
+    let mut request = client.get(config.format_url(&tile));
+    for (name, value) in &config.headers {
+        request = request.header(name.clone(), value.clone());
+    }
+
+    let response = request.send().await.map_err(TileFetchError::from_network)?;
+    if !response.status().is_success() {
+        return Err(TileFetchError::HttpStatus(response.status()));
+    }
+
+    let content_type = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value: &HeaderValue| value.to_str().ok())
+        .map(str::to_owned);
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(TileFetchError::from_network)?
+        .to_vec();
+
+    if let Err(err) = write_local_tile(&cache_key, &bytes, &lru).await {
+        warn!("failed to cache tile in IndexedDB (x={}, y={}): {}", tile.x, tile.y, err);
+    }
+
+    Ok(TileImagePayload {
+        bytes,
+        cached_path: None,
         content_type,
         from_cache: false,
     })
@@ -413,4 +518,234 @@ fn build_image_from_payload(payload: &TileImagePayload) -> Result<Image, TileFet
         TextureFormat::Rgba8UnormSrgb,
         RenderAssetUsages::default(),
     ))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn storage_cache_key(config: &PreparedConfig, tile: &TileMathTile) -> String {
+    format!(
+        "bevy_geo_tiles:{}/{}/{}.{}",
+        tile.zoom, tile.x, tile.y, config.cache_extension
+    )
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn read_local_tile(
+    cache_key: &str,
+    lru: &Arc<Mutex<CacheLru>>,
+) -> Result<Option<Vec<u8>>, TileFetchError> {
+    let db = open_tile_db().await?;
+    let transaction = db
+        .transaction(IDB_STORE)
+        .with_mode(TransactionMode::Readonly)
+        .build()
+        .map_err(|err| TileFetchError::Io(format!("{err:?}")))?;
+    let store = transaction
+        .object_store(IDB_STORE)
+        .map_err(|err| TileFetchError::Io(format!("{err:?}")))?;
+    let request = store
+        .get::<Uint8Array, _, _>(cache_key)
+        .primitive()
+        .map_err(|err| TileFetchError::Io(format!("{err:?}")))?;
+    let result = request.await.map_err(|err| TileFetchError::Io(format!("{err:?}")))?;
+    if let Some(bytes) = result {
+        if let Ok(mut lru) = lru.lock() {
+            lru.touch(cache_key.to_string());
+        }
+        return Ok(Some(bytes.into()));
+    }
+    Ok(None)
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn write_local_tile(
+    cache_key: &str,
+    bytes: &[u8],
+    lru: &Arc<Mutex<CacheLru>>,
+) -> Result<(), TileFetchError> {
+    let db = open_tile_db().await?;
+    if let Err(err) = put_tile_bytes(&db, cache_key, bytes).await {
+        if !is_quota_exceeded(&err) {
+            return Err(TileFetchError::Io(format!("{err:?}")));
+        }
+
+        loop {
+            let oldest = if let Ok(mut lru) = lru.lock() {
+                lru.pop_oldest()
+            } else {
+                None
+            };
+
+            match oldest {
+                Some(oldest_key) => {
+                    let _ = delete_tile_key(&db, &oldest_key).await;
+                    match put_tile_bytes(&db, cache_key, bytes).await {
+                        Ok(()) => {
+                            if let Ok(mut lru) = lru.lock() {
+                                lru.touch(cache_key.to_string());
+                            }
+                            return Ok(());
+                        }
+                        Err(retry_err) => {
+                            if !is_quota_exceeded(&retry_err) {
+                                return Err(TileFetchError::Io(format!("{retry_err:?}")));
+                            }
+                            continue;
+                        }
+                    }
+                }
+                None => return Err(TileFetchError::Io(format!("{err:?}"))),
+            }
+        }
+    }
+
+    if let Ok(mut lru) = lru.lock() {
+        lru.touch(cache_key.to_string());
+    }
+    Ok(())
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn open_tile_db(
+) -> Result<Database, TileFetchError> {
+    if let Some(existing) = get_cached_db() {
+        return Ok(existing);
+    }
+
+    let opened = Database::open(IDB_NAME)
+        .with_version(IDB_VERSION)
+        .with_on_upgrade_needed(|_event, db| {
+            if !db.object_store_names().any(|name| name == IDB_STORE) {
+                db.create_object_store(IDB_STORE).build()?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|err| TileFetchError::Io(format!("{err:?}")))?;
+
+    set_cached_db(opened.clone());
+    Ok(opened)
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn put_tile_bytes(
+    db: &Database,
+    cache_key: &str,
+    bytes: &[u8],
+) -> Result<(), indexed_db_futures::error::Error> {
+    let transaction = db
+        .transaction(IDB_STORE)
+        .with_mode(TransactionMode::Readwrite)
+        .build()?;
+    let store = transaction.object_store(IDB_STORE)?;
+    let request = store
+        .put(Uint8Array::from(bytes.to_vec()))
+        .with_key(cache_key)
+        .primitive()?;
+    request.await?;
+    transaction.commit().await?;
+    Ok(())
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn delete_tile_key(
+    db: &Database,
+    cache_key: &str,
+) -> Result<(), indexed_db_futures::error::Error> {
+    let transaction = db
+        .transaction(IDB_STORE)
+        .with_mode(TransactionMode::Readwrite)
+        .build()?;
+    let store = transaction.object_store(IDB_STORE)?;
+    let request = store.delete::<String, _>(cache_key.to_string()).primitive()?;
+    request.await?;
+    transaction.commit().await?;
+    Ok(())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn is_quota_exceeded(err: &impl fmt::Debug) -> bool {
+    let text = format!("{err:?}").to_ascii_lowercase();
+    text.contains("quotaexceeded") || text.contains("quota exceeded")
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Debug, Default)]
+struct CacheLru {
+    order: VecDeque<String>,
+    entries: HashSet<String>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl CacheLru {
+    fn seed_from_storage() -> Arc<Mutex<Self>> {
+        let lru = Arc::new(Mutex::new(Self::default()));
+        let lru_clone = Arc::clone(&lru);
+        IoTaskPool::get()
+            .spawn(async move {
+                if let Ok(opened) = open_tile_db().await {
+                    if let Ok(keys) = read_all_keys(&opened).await {
+                        if let Ok(mut lru_guard) = lru_clone.lock() {
+                            for key in keys {
+                                lru_guard.entries.insert(key.clone());
+                                lru_guard.order.push_back(key);
+                            }
+                        }
+                    }
+                }
+            })
+            .detach();
+        lru
+    }
+
+    fn touch(&mut self, key: String) {
+        if self.entries.contains(&key) {
+            self.order.retain(|item| item != &key);
+        } else {
+            self.entries.insert(key.clone());
+        }
+        self.order.push_back(key);
+    }
+
+    fn pop_oldest(&mut self) -> Option<String> {
+        let key = self.order.pop_front()?;
+        self.entries.remove(&key);
+        Some(key)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+const IDB_NAME: &str = "bevy_geo_tiles";
+#[cfg(target_arch = "wasm32")]
+const IDB_STORE: &str = "tiles";
+#[cfg(target_arch = "wasm32")]
+const IDB_VERSION: u8 = 1;
+
+#[cfg(target_arch = "wasm32")]
+async fn read_all_keys(db: &Database) -> Result<Vec<String>, indexed_db_futures::error::Error> {
+    let transaction = db
+        .transaction(IDB_STORE)
+        .with_mode(TransactionMode::Readonly)
+        .build()?;
+    let store = transaction.object_store(IDB_STORE)?;
+    let request = store.get_all_keys::<String>().primitive()?;
+    let keys: Vec<String> = request.await?.collect::<Result<Vec<_>, _>>()?;
+    transaction.commit().await?;
+    Ok(keys)
+}
+
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    static TILE_DB: RefCell<Option<Database>> = RefCell::new(None);
+}
+
+#[cfg(target_arch = "wasm32")]
+fn get_cached_db() -> Option<Database> {
+    TILE_DB.with(|cell| cell.borrow().clone())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn set_cached_db(db: Database) {
+    TILE_DB.with(|cell| {
+        *cell.borrow_mut() = Some(db);
+    });
 }
